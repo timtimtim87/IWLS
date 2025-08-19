@@ -1,7 +1,11 @@
 # Ignore everything by default
 *
 
-# But include Python files
+# But don't ignore the PYTHONS directory and its contents
+!PYTHONS/
+!PYTHONS/**
+
+# Include Python files
 !*.py
 
 # Include the .gitignore file itself
