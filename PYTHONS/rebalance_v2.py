@@ -150,247 +150,206 @@ def get_top_5_ev_assets(asset_evs):
     # Return top 5
     return sorted_assets[:5]
 
-def check_rebalance_needed(current_top5, new_top5):
+def generate_annual_rebalance_dates(start_date, end_date):
     """
-    Check if portfolio needs rebalancing (if top 5 assets changed)
+    Generate rebalance dates exactly 365 calendar days apart
     """
-    current_assets = set([asset for asset, _ in current_top5])
-    new_assets = set([asset for asset, _ in new_top5])
+    rebalance_dates = []
+    current_date = start_date
     
-    return current_assets != new_assets
+    while current_date <= end_date:
+        rebalance_dates.append(current_date)
+        current_date = current_date + timedelta(days=365)  # Exactly 365 calendar days
+    
+    return rebalance_dates
 
-def run_top5_ev_trading_strategy(all_results, ev_df, start_date, end_date, 
-                                 initial_capital=10000, rebalance_frequency='weekly'):
+def run_top5_ev_annual_rebalancing_strategy(all_results, ev_df, start_date, end_date, initial_capital=10000):
     """
-    Run trading strategy: Always hold top 5 highest EV assets
-    Rebalance when top 5 composition changes (checked weekly/daily)
+    Run Top 5 EV strategy with ANNUAL rebalancing (365 calendar days)
     """
-    print(f"\nRunning Top 5 EV Trading Strategy")
-    print(f"Strategy: Always hold the 5 highest EV assets")
-    print(f"Rebalance when composition changes (checked {rebalance_frequency})")
+    print(f"\nRunning Top 5 EV Annual Rebalancing Strategy")
+    print(f"Strategy: Hold top 5 highest EV assets, rebalance every 365 calendar days")
     print(f"Initial capital: ${initial_capital:,}")
     print(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
     
-    # Generate check dates based on frequency
-    if rebalance_frequency == 'daily':
-        check_dates = pd.date_range(start=start_date, end=end_date, freq='D')
-    elif rebalance_frequency == 'weekly':
-        check_dates = pd.date_range(start=start_date, end=end_date, freq='W-MON')  # Every Monday
-    else:  # monthly
-        check_dates = pd.date_range(start=start_date, end=end_date, freq='MS')  # Month start
-    
-    # Generate all dates for daily portfolio tracking
-    all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    # Generate annual rebalance dates (365 days apart)
+    rebalance_dates = generate_annual_rebalance_dates(start_date, end_date)
+    print(f"Rebalance dates: {len(rebalance_dates)} periods")
+    for date in rebalance_dates:
+        print(f"  {date.strftime('%Y-%m-%d')}")
     
     # Portfolio tracking
-    current_portfolio = {}  # {asset: shares}
-    cash = 0
-    current_top5 = []
+    portfolio = {}  # {asset: shares}
+    cash = initial_capital
     
     # History tracking
     rebalance_history = []
-    daily_portfolio_values = []
     
-    print(f"\nStrategy will check for rebalancing on {len(check_dates)} dates")
-    print(f"Daily portfolio tracking over {len(all_dates)} dates")
-    
-    # Initial setup - start with first rebalance
-    first_check_date = check_dates[0]
-    
-    print(f"\n--- Initial Portfolio Setup: {first_check_date.strftime('%Y-%m-%d')} ---")
-    
-    # Get initial top 5
-    current_z_scores = calculate_current_z_scores(all_results, first_check_date)
-    if len(current_z_scores) >= 5:
-        asset_evs = get_expected_values_for_z_scores(ev_df, current_z_scores)
-        if len(asset_evs) >= 5:
-            current_top5 = get_top_5_ev_assets(asset_evs)
+    # Process each rebalance date
+    for i, rebalance_date in enumerate(rebalance_dates):
+        print(f"\n--- Rebalance {i+1}: {rebalance_date.strftime('%Y-%m-%d')} ---")
+        
+        # Sell all existing positions (except on first rebalance)
+        if portfolio:
+            print("Selling all existing positions:")
+            total_proceeds = 0
             
-            print(f"Initial Top 5 Assets:")
-            for asset, data in current_top5:
-                print(f"  {asset}: EV = {data['expected_value']:.1f}%")
+            for asset, shares in portfolio.items():
+                current_price = get_asset_price(all_results, asset, rebalance_date)
+                if current_price:
+                    proceeds = shares * current_price
+                    total_proceeds += proceeds
+                    print(f"  Sold {shares:.2f} shares of {asset} @ ${current_price:.2f} = ${proceeds:.2f}")
             
-            # Buy equal amounts of each
-            allocation_per_asset = initial_capital / 5
-            
-            for asset, data in current_top5:
-                price = get_asset_price(all_results, asset, first_check_date)
-                if price and price > 0:
-                    shares = allocation_per_asset / price
-                    current_portfolio[asset] = shares
-                    print(f"  Bought {shares:.2f} shares of {asset} @ ${price:.2f}")
-            
-            # Record initial rebalance
-            portfolio_value = sum(
-                current_portfolio[asset] * get_asset_price(all_results, asset, first_check_date)
-                for asset in current_portfolio
-                if get_asset_price(all_results, asset, first_check_date)
-            )
-            
-            combined_ev = sum(data['expected_value'] for _, data in current_top5)
-            
-            rebalance_history.append({
-                'date': first_check_date,
-                'reason': 'Initial Setup',
-                'assets_added': [asset for asset, _ in current_top5],
-                'assets_removed': [],
-                'portfolio_value': portfolio_value,
-                'combined_ev': combined_ev,
-                'num_changes': 5
-            })
-    
-    # Process remaining check dates for rebalancing
-    rebalances_performed = 1  # Count initial setup
-    
-    for check_date in check_dates[1:]:  # Skip first date (already processed)
-        # Get current top 5 based on latest data
-        current_z_scores = calculate_current_z_scores(all_results, check_date)
+            cash = total_proceeds
+            portfolio = {}
+            print(f"Total cash from sales: ${cash:.2f}")
+        
+        # Calculate current Z-scores and EV for all assets
+        current_z_scores = calculate_current_z_scores(all_results, rebalance_date)
         
         if len(current_z_scores) >= 5:
             asset_evs = get_expected_values_for_z_scores(ev_df, current_z_scores)
             
             if len(asset_evs) >= 5:
-                new_top5 = get_top_5_ev_assets(asset_evs)
+                # Get top 5 highest EV assets
+                top5_assets = get_top_5_ev_assets(asset_evs)
                 
-                # Check if rebalancing is needed
-                if check_rebalance_needed(current_top5, new_top5):
-                    print(f"\n--- Rebalancing on {check_date.strftime('%Y-%m-%d')} ---")
-                    
-                    # Calculate current portfolio value before rebalancing
-                    pre_rebalance_value = sum(
-                        current_portfolio[asset] * get_asset_price(all_results, asset, check_date)
-                        for asset in current_portfolio
-                        if get_asset_price(all_results, asset, check_date)
-                    )
-                    
-                    # Determine changes
-                    current_assets = set([asset for asset, _ in current_top5])
-                    new_assets = set([asset for asset, _ in new_top5])
-                    
-                    assets_to_remove = current_assets - new_assets
-                    assets_to_add = new_assets - current_assets
-                    
-                    print(f"  Assets to remove: {list(assets_to_remove)}")
-                    print(f"  Assets to add: {list(assets_to_add)}")
-                    
-                    # Sell positions for removed assets
-                    cash_from_sales = 0
-                    for asset in assets_to_remove:
-                        if asset in current_portfolio:
-                            shares = current_portfolio[asset]
-                            price = get_asset_price(all_results, asset, check_date)
-                            if price:
-                                proceeds = shares * price
-                                cash_from_sales += proceeds
-                                print(f"  Sold {shares:.2f} shares of {asset} @ ${price:.2f} = ${proceeds:.2f}")
-                                del current_portfolio[asset]
-                    
-                    # Buy new positions
-                    if len(assets_to_add) > 0:
-                        allocation_per_new_asset = cash_from_sales / len(assets_to_add)
-                        
-                        for asset in assets_to_add:
-                            price = get_asset_price(all_results, asset, check_date)
-                            if price and price > 0:
-                                shares = allocation_per_new_asset / price
-                                current_portfolio[asset] = shares
-                                print(f"  Bought {shares:.2f} shares of {asset} @ ${price:.2f}")
-                    
-                    # Update current top 5
-                    current_top5 = new_top5
-                    
-                    # Calculate post-rebalance portfolio value
-                    post_rebalance_value = sum(
-                        current_portfolio[asset] * get_asset_price(all_results, asset, check_date)
-                        for asset in current_portfolio
-                        if get_asset_price(all_results, asset, check_date)
-                    )
-                    
-                    combined_ev = sum(data['expected_value'] for _, data in current_top5)
-                    
-                    # Record rebalance
-                    rebalance_history.append({
-                        'date': check_date,
-                        'reason': 'Composition Change',
-                        'assets_added': list(assets_to_add),
-                        'assets_removed': list(assets_to_remove),
-                        'portfolio_value': post_rebalance_value,
-                        'combined_ev': combined_ev,
-                        'num_changes': len(assets_to_add) + len(assets_to_remove)
-                    })
-                    
-                    rebalances_performed += 1
-                    print(f"  New portfolio value: ${post_rebalance_value:.2f}")
-                    print(f"  Combined EV: {combined_ev:.1f}%")
+                print(f"Selected Top 5 Assets by Expected Value:")
+                for asset, data in top5_assets:
+                    print(f"  {asset}: EV = {data['expected_value']:.1f}%, Z = {data['z_score']:.2f}")
+                
+                # Buy equal amounts of each (20% allocation each)
+                allocation_per_asset = cash / 5
+                
+                print(f"\nBuying positions (${allocation_per_asset:.2f} each):")
+                for asset, data in top5_assets:
+                    current_price = get_asset_price(all_results, asset, rebalance_date)
+                    if current_price and current_price > 0:
+                        shares = allocation_per_asset / current_price
+                        portfolio[asset] = shares
+                        print(f"  Bought {shares:.2f} shares of {asset} @ ${current_price:.2f}")
+                
+                # Calculate total portfolio value
+                portfolio_value = sum(
+                    portfolio[asset] * get_asset_price(all_results, asset, rebalance_date)
+                    for asset in portfolio
+                    if get_asset_price(all_results, asset, rebalance_date)
+                )
+                
+                combined_ev = sum(data['expected_value'] for _, data in top5_assets)
+                
+                # Record rebalance
+                rebalance_history.append({
+                    'date': rebalance_date,
+                    'rebalance_num': i + 1,
+                    'portfolio_value': portfolio_value,
+                    'combined_ev': combined_ev,
+                    'assets': [asset for asset, _ in top5_assets],
+                    'individual_evs': {asset: data['expected_value'] for asset, data in top5_assets}
+                })
+                
+                cash = 0  # All cash invested
+                print(f"Portfolio value: ${portfolio_value:.2f}")
+                print(f"Combined EV: {combined_ev:.1f}%")
+            else:
+                print(f"Insufficient EV data ({len(asset_evs)} assets)")
+        else:
+            print(f"Insufficient Z-score data ({len(current_z_scores)} assets)")
     
-    # Calculate daily portfolio values
+    # Calculate final portfolio value
+    final_date = end_date
+    final_portfolio_value = 0
+    
+    print(f"\n--- Final Portfolio Value ({final_date.strftime('%Y-%m-%d')}) ---")
+    if portfolio:
+        for asset, shares in portfolio.items():
+            final_price = get_asset_price(all_results, asset, final_date)
+            if final_price:
+                asset_value = shares * final_price
+                final_portfolio_value += asset_value
+                print(f"{asset}: {shares:.2f} shares @ ${final_price:.2f} = ${asset_value:.2f}")
+    
+    # Calculate performance metrics
+    total_return = ((final_portfolio_value / initial_capital) - 1) * 100
+    years = (end_date - start_date).days / 365.25
+    annualized_return = ((final_portfolio_value / initial_capital) ** (1 / years) - 1) * 100
+    
+    print(f"\n" + "="*60)
+    print("ANNUAL REBALANCING STRATEGY RESULTS")
+    print("="*60)
+    print(f"Initial capital: ${initial_capital:,}")
+    print(f"Final portfolio value: ${final_portfolio_value:,.2f}")
+    print(f"Total return: {total_return:.2f}%")
+    print(f"Annualized return: {annualized_return:.2f}%")
+    print(f"Number of rebalances: {len(rebalance_dates)}")
+    print(f"Days between rebalances: 365 (fixed)")
+    
+    return {
+        'rebalance_history': rebalance_history,
+        'final_value': final_portfolio_value,
+        'total_return': total_return,
+        'annualized_return': annualized_return,
+        'rebalances_performed': len(rebalance_dates)
+    }
+
+def calculate_daily_portfolio_values(all_results, rebalance_history, start_date, end_date):
+    """
+    Calculate daily portfolio values between rebalances
+    """
     print(f"\nCalculating daily portfolio values...")
     
-    rebalance_dates = [r['date'] for r in rebalance_history]
+    all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    daily_values = []
+    
+    current_portfolio = {}
     current_rebalance_idx = 0
     
     for date in all_dates:
-        # Check if we need to update portfolio composition (new rebalance)
+        # Check if we need to update portfolio composition (rebalance occurred)
         if (current_rebalance_idx < len(rebalance_history) and 
             date >= rebalance_history[current_rebalance_idx]['date']):
             
-            # Update portfolio to match rebalance
+            # Update to new portfolio composition
+            rebalance_data = rebalance_history[current_rebalance_idx]
+            portfolio_value = rebalance_data['portfolio_value']
+            assets = rebalance_data['assets']
+            
+            # Calculate shares for each asset (equal weight)
+            current_portfolio = {}
+            if len(assets) > 0:
+                allocation_per_asset = portfolio_value / len(assets)
+                
+                for asset in assets:
+                    asset_price = get_asset_price(all_results, asset, rebalance_data['date'])
+                    if asset_price and asset_price > 0:
+                        shares = allocation_per_asset / asset_price
+                        current_portfolio[asset] = shares
+            
             current_rebalance_idx += 1
         
         # Calculate portfolio value for this date
-        portfolio_value = 0
-        position_count = 0
+        total_value = 0
+        num_positions = 0
         
         for asset, shares in current_portfolio.items():
             price = get_asset_price(all_results, asset, date)
             if price:
-                portfolio_value += shares * price
-                position_count += 1
+                total_value += shares * price
+                num_positions += 1
         
-        daily_portfolio_values.append({
+        daily_values.append({
             'date': date,
-            'portfolio_value': portfolio_value,
-            'num_positions': position_count,
-            'is_rebalance_date': date in rebalance_dates
+            'portfolio_value': total_value,
+            'num_positions': num_positions
         })
     
-    # Calculate final metrics
-    if daily_portfolio_values:
-        final_value = daily_portfolio_values[-1]['portfolio_value']
-        total_return = ((final_value / initial_capital) - 1) * 100
-        years = (end_date - start_date).days / 365.25
-        annualized_return = ((final_value / initial_capital) ** (1 / years) - 1) * 100
-    else:
-        final_value = initial_capital
-        total_return = 0
-        annualized_return = 0
-    
-    print(f"\n" + "="*60)
-    print("STRATEGY RESULTS")
-    print("="*60)
-    print(f"Initial capital: ${initial_capital:,}")
-    print(f"Final portfolio value: ${final_value:,.2f}")
-    print(f"Total return: {total_return:.2f}%")
-    print(f"Annualized return: {annualized_return:.2f}%")
-    print(f"Total rebalances: {rebalances_performed}")
-    print(f"Average time between rebalances: {len(all_dates)/rebalances_performed:.1f} days")
-    
-    return {
-        'daily_values': pd.DataFrame(daily_portfolio_values),
-        'rebalance_history': rebalance_history,
-        'final_value': final_value,
-        'total_return': total_return,
-        'annualized_return': annualized_return,
-        'rebalances_performed': rebalances_performed
-    }
+    return pd.DataFrame(daily_values)
 
-def create_portfolio_visualization(results, output_dir):
+def create_annual_rebalancing_visualization(results, daily_values, output_dir):
     """
-    Create portfolio performance visualization with rebalance markers
+    Create visualization for annual rebalancing strategy
     """
-    daily_values = results['daily_values']
-    rebalance_history = results['rebalance_history']
-    
     if len(daily_values) == 0:
         print("No daily values to plot")
         return
@@ -402,7 +361,7 @@ def create_portfolio_visualization(results, output_dir):
              linewidth=2, color='blue', label='Portfolio Value')
     
     # Add rebalance markers
-    rebalance_dates = [r['date'] for r in rebalance_history]
+    rebalance_dates = [r['date'] for r in results['rebalance_history']]
     rebalance_values = []
     
     for rebalance_date in rebalance_dates:
@@ -416,91 +375,98 @@ def create_portfolio_visualization(results, output_dir):
             rebalance_values.append(daily_values['portfolio_value'].iloc[closest_idx])
     
     ax1.scatter(rebalance_dates, rebalance_values, 
-               color='red', s=100, marker='^', zorder=5, 
-               label=f'Rebalances ({len(rebalance_dates)})')
+               color='red', s=150, marker='^', zorder=5, 
+               label=f'Annual Rebalances ({len(rebalance_dates)})')
     
     # Add initial capital line
     ax1.axhline(y=10000, color='gray', linestyle='--', alpha=0.7, label='Initial Capital')
     
-    ax1.set_title('Top 5 EV Strategy: Portfolio Value Over Time', fontweight='bold', fontsize=14)
+    ax1.set_title('Top 5 EV Strategy: Annual Rebalancing (365 Days)', fontweight='bold', fontsize=14)
     ax1.set_xlabel('Date')
     ax1.set_ylabel('Portfolio Value ($)')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
     
-    # Plot 2: Rebalance frequency over time
-    if len(rebalance_history) > 1:
-        rebalance_df = pd.DataFrame(rebalance_history)
-        rebalance_df['days_since_last'] = rebalance_df['date'].diff().dt.days
-        
-        # Remove first entry (NaN)
-        rebalance_df = rebalance_df.dropna(subset=['days_since_last'])
-        
-        ax2.bar(range(len(rebalance_df)), rebalance_df['days_since_last'], 
-               color='orange', alpha=0.7)
-        ax2.set_title('Days Between Rebalances', fontweight='bold')
-        ax2.set_xlabel('Rebalance Number')
-        ax2.set_ylabel('Days Since Last Rebalance')
-        ax2.grid(True, alpha=0.3)
-        
-        # Add average line
-        avg_days = rebalance_df['days_since_last'].mean()
-        ax2.axhline(y=avg_days, color='red', linestyle='--', 
-                   label=f'Average: {avg_days:.1f} days')
-        ax2.legend()
+    # Plot 2: Combined EV over time
+    rebalance_df = pd.DataFrame(results['rebalance_history'])
     
-    # Plot 3: Number of changes per rebalance
-    if len(rebalance_history) > 0:
-        rebalance_df = pd.DataFrame(rebalance_history)
-        
-        ax3.bar(range(len(rebalance_df)), rebalance_df['num_changes'], 
-               color='green', alpha=0.7)
-        ax3.set_title('Portfolio Changes per Rebalance', fontweight='bold')
-        ax3.set_xlabel('Rebalance Number')
-        ax3.set_ylabel('Number of Asset Changes')
-        ax3.grid(True, alpha=0.3)
-        
-        # Add labels for rebalance dates
-        ax3.set_xticks(range(len(rebalance_df)))
-        ax3.set_xticklabels([r['date'].strftime('%Y-%m') for r in rebalance_history], 
-                           rotation=45)
+    ax2.plot(rebalance_df['date'], rebalance_df['combined_ev'], 
+            marker='o', linewidth=3, color='green', markersize=8)
+    ax2.set_title('Combined Expected Value at Each Rebalance', fontweight='bold')
+    ax2.set_xlabel('Date')
+    ax2.set_ylabel('Combined EV (%)')
+    ax2.grid(True, alpha=0.3)
     
-    # Plot 4: Combined EV over time
-    if len(rebalance_history) > 0:
-        rebalance_df = pd.DataFrame(rebalance_history)
+    # Add value labels
+    for _, row in rebalance_df.iterrows():
+        ax2.annotate(f'{row["combined_ev"]:.1f}%', 
+                    (row['date'], row['combined_ev']),
+                    xytext=(0, 10), textcoords='offset points',
+                    ha='center', fontweight='bold')
+    
+    # Plot 3: Asset allocation changes
+    all_assets = set()
+    for rebalance in results['rebalance_history']:
+        all_assets.update(rebalance['assets'])
+    
+    asset_timeline = {}
+    for asset in all_assets:
+        asset_timeline[asset] = []
+        for rebalance in results['rebalance_history']:
+            if asset in rebalance['assets']:
+                asset_timeline[asset].append(1)
+            else:
+                asset_timeline[asset].append(0)
+    
+    # Show top 10 most selected assets
+    asset_counts = {asset: sum(timeline) for asset, timeline in asset_timeline.items()}
+    top_assets = sorted(asset_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    
+    y_positions = range(len(top_assets))
+    for i, (asset, count) in enumerate(top_assets):
+        periods = []
+        for j, included in enumerate(asset_timeline[asset]):
+            if included:
+                periods.append(j + 1)
         
-        ax4.plot(rebalance_df['date'], rebalance_df['combined_ev'], 
-                marker='o', linewidth=2, color='purple', markersize=6)
-        ax4.set_title('Combined EV of Top 5 Assets at Each Rebalance', fontweight='bold')
-        ax4.set_xlabel('Date')
-        ax4.set_ylabel('Combined Expected Value (%)')
-        ax4.grid(True, alpha=0.3)
-        
-        # Add average line
-        avg_ev = rebalance_df['combined_ev'].mean()
-        ax4.axhline(y=avg_ev, color='red', linestyle='--', 
-                   label=f'Average: {avg_ev:.1f}%')
-        ax4.legend()
+        if periods:
+            ax3.scatter(periods, [i] * len(periods), s=100, alpha=0.7, label=asset if i < 5 else "")
+    
+    ax3.set_title('Asset Selection Timeline (Top 10 Most Selected)', fontweight='bold')
+    ax3.set_xlabel('Rebalance Period')
+    ax3.set_ylabel('Assets')
+    ax3.set_yticks(y_positions)
+    ax3.set_yticklabels([asset for asset, _ in top_assets])
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Portfolio concentration
+    ax4.plot(daily_values['date'], daily_values['num_positions'], 
+             linewidth=2, color='orange')
+    ax4.set_title('Portfolio Concentration (Number of Holdings)', fontweight='bold')
+    ax4.set_xlabel('Date')
+    ax4.set_ylabel('Number of Positions')
+    ax4.grid(True, alpha=0.3)
+    ax4.set_ylim(0, 6)
     
     plt.tight_layout()
-    plt.savefig(f"{output_dir}/top5_ev_trading_performance.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{output_dir}/annual_rebalancing_analysis.png", dpi=300, bbox_inches='tight')
     plt.close()
 
-def save_trading_results(results, output_dir):
+def save_annual_rebalancing_results(results, daily_values, output_dir):
     """
-    Save trading strategy results
+    Save annual rebalancing results
     """
     # Daily portfolio values
-    results['daily_values'].to_csv(f"{output_dir}/top5_ev_daily_portfolio_values.csv", index=False)
+    daily_values.to_csv(f"{output_dir}/annual_rebalance_daily_values.csv", index=False)
     
     # Rebalance history
     rebalance_df = pd.DataFrame(results['rebalance_history'])
-    rebalance_df.to_csv(f"{output_dir}/top5_ev_rebalance_history.csv", index=False)
+    rebalance_df.to_csv(f"{output_dir}/annual_rebalance_history.csv", index=False)
     
     # Strategy summary
     summary = {
-        'strategy': 'Top 5 Highest EV Assets',
+        'strategy': 'Top 5 EV Annual Rebalancing (365 days)',
         'final_value': results['final_value'],
         'total_return': results['total_return'],
         'annualized_return': results['annualized_return'],
@@ -508,67 +474,65 @@ def save_trading_results(results, output_dir):
     }
     
     summary_df = pd.DataFrame([summary])
-    summary_df.to_csv(f"{output_dir}/top5_ev_strategy_summary.csv", index=False)
+    summary_df.to_csv(f"{output_dir}/annual_rebalance_summary.csv", index=False)
 
-def analyze_rebalance_patterns(results):
+def analyze_rebalancing_frequency_impact(results):
     """
-    Analyze patterns in rebalancing
+    Analyze the impact of annual rebalancing frequency
     """
+    print(f"\nANNUAL REBALANCING FREQUENCY ANALYSIS:")
+    print("-" * 50)
+    
     rebalance_history = results['rebalance_history']
     
     if len(rebalance_history) < 2:
+        print("Need at least 2 rebalances for analysis")
         return
     
-    print(f"\nREBALANCE PATTERN ANALYSIS:")
-    print("-" * 40)
+    # Calculate actual days between rebalances
+    days_between = []
+    for i in range(1, len(rebalance_history)):
+        days = (rebalance_history[i]['date'] - rebalance_history[i-1]['date']).days
+        days_between.append(days)
     
-    rebalance_df = pd.DataFrame(rebalance_history)
-    
-    # Calculate time between rebalances
-    rebalance_df['days_since_last'] = rebalance_df['date'].diff().dt.days
-    time_between = rebalance_df['days_since_last'].dropna()
-    
-    print(f"Average days between rebalances: {time_between.mean():.1f}")
-    print(f"Median days between rebalances: {time_between.median():.1f}")
-    print(f"Min/Max days: {time_between.min():.0f} / {time_between.max():.0f}")
+    print(f"Target rebalancing frequency: 365 days")
+    print(f"Actual days between rebalances: {days_between}")
+    print(f"Average days between rebalances: {np.mean(days_between):.1f}")
+    print(f"Consistency: All should be exactly 365 days")
     
     # Asset turnover analysis
-    all_additions = []
-    all_removals = []
+    print(f"\nASSET TURNOVER ANALYSIS:")
+    print("-" * 30)
     
-    for rebalance in rebalance_history[1:]:  # Skip initial setup
-        all_additions.extend(rebalance['assets_added'])
-        all_removals.extend(rebalance['assets_removed'])
+    total_changes = 0
+    for i in range(1, len(rebalance_history)):
+        prev_assets = set(rebalance_history[i-1]['assets'])
+        curr_assets = set(rebalance_history[i]['assets'])
+        
+        assets_removed = prev_assets - curr_assets
+        assets_added = curr_assets - prev_assets
+        
+        changes = len(assets_removed) + len(assets_added)
+        total_changes += changes
+        
+        print(f"Rebalance {i+1}: {changes} changes")
+        if assets_removed:
+            print(f"  Removed: {', '.join(assets_removed)}")
+        if assets_added:
+            print(f"  Added: {', '.join(assets_added)}")
     
-    from collections import Counter
-    
-    if all_additions:
-        print(f"\nMOST FREQUENTLY ADDED ASSETS:")
-        addition_counts = Counter(all_additions)
-        for asset, count in addition_counts.most_common(5):
-            print(f"  {asset}: {count} times")
-    
-    if all_removals:
-        print(f"\nMOST FREQUENTLY REMOVED ASSETS:")
-        removal_counts = Counter(all_removals)
-        for asset, count in removal_counts.most_common(5):
-            print(f"  {asset}: {count} times")
-    
-    # Combined EV analysis
-    ev_values = [r['combined_ev'] for r in rebalance_history]
-    print(f"\nCOMBINED EV ANALYSIS:")
-    print(f"Average combined EV: {np.mean(ev_values):.1f}%")
-    print(f"EV range: {np.min(ev_values):.1f}% to {np.max(ev_values):.1f}%")
-    print(f"EV standard deviation: {np.std(ev_values):.1f}%")
+    avg_turnover = total_changes / (len(rebalance_history) - 1) if len(rebalance_history) > 1 else 0
+    print(f"\nAverage turnover per rebalance: {avg_turnover:.1f} assets")
+    print(f"Maximum possible turnover: 5 assets (100% turnover)")
+    print(f"Turnover rate: {avg_turnover/5*100:.1f}%")
 
 def main():
-    print("Top 5 EV Trading Strategy with Dynamic Rebalancing")
-    print("="*60)
-    print("Strategy: Always hold the 5 highest EV assets")
-    print("Rebalance when top 5 composition changes")
+    print("Top 5 EV Strategy with ANNUAL Rebalancing (365 Calendar Days)")
+    print("="*70)
+    print("Strategy: Hold top 5 highest EV assets, rebalance exactly every 365 days")
     
     # Create output directory
-    output_dir = "/Users/tim/IWLS-OPTIONS/TOP5_EV_TRADING"
+    output_dir = "/Users/tim/IWLS-OPTIONS/ANNUAL_REBALANCING_365"
     os.makedirs(output_dir, exist_ok=True)
     print(f"\nOutput directory: {output_dir}")
     
@@ -590,45 +554,49 @@ def main():
     
     print(f"\nData range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
     print(f"Strategy period: {min_start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+    print(f"Total strategy duration: {(end_date - min_start_date).days} days")
     
-    # Run trading strategy
-    print(f"\n{'='*20} RUNNING TOP 5 EV TRADING STRATEGY {'='*20}")
+    # Run annual rebalancing strategy
+    print(f"\n{'='*20} RUNNING ANNUAL REBALANCING STRATEGY {'='*20}")
     
-    results = run_top5_ev_trading_strategy(
+    results = run_top5_ev_annual_rebalancing_strategy(
         all_results=all_results,
         ev_df=ev_df,
         start_date=min_start_date,
         end_date=end_date,
-        initial_capital=10000,
-        rebalance_frequency='weekly'  # Check for changes weekly
+        initial_capital=10000
     )
     
-    # Analyze rebalance patterns
-    analyze_rebalance_patterns(results)
+    # Calculate daily portfolio values
+    daily_values = calculate_daily_portfolio_values(all_results, results['rebalance_history'], min_start_date, end_date)
+    
+    # Analyze rebalancing frequency
+    analyze_rebalancing_frequency_impact(results)
     
     # Create visualizations
     print(f"\nCreating visualizations...")
-    create_portfolio_visualization(results, output_dir)
+    create_annual_rebalancing_visualization(results, daily_values, output_dir)
     
     # Save results
-    save_trading_results(results, output_dir)
+    save_annual_rebalancing_results(results, daily_values, output_dir)
     
     print(f"\n" + "="*80)
-    print("TOP 5 EV TRADING STRATEGY COMPLETE")
+    print("ANNUAL REBALANCING STRATEGY (365 DAYS) COMPLETE")
     print("="*80)
     print("Files saved:")
-    print("  - top5_ev_trading_performance.png (4-panel performance analysis)")
-    print("  - top5_ev_daily_portfolio_values.csv (daily portfolio tracking)")
-    print("  - top5_ev_rebalance_history.csv (all rebalancing events)")
-    print("  - top5_ev_strategy_summary.csv (performance summary)")
+    print("  - annual_rebalancing_analysis.png (4-panel analysis)")
+    print("  - annual_rebalance_daily_values.csv (daily portfolio tracking)")
+    print("  - annual_rebalance_history.csv (rebalancing events)")
+    print("  - annual_rebalance_summary.csv (performance summary)")
     
     # Final summary
     print(f"\nFINAL PERFORMANCE SUMMARY:")
-    print(f"Strategy: Top 5 Highest EV Assets (Dynamic Rebalancing)")
+    print(f"Strategy: Top 5 EV Assets, Annual Rebalancing (365 days)")
     print(f"Final Value: ${results['final_value']:,.2f}")
     print(f"Total Return: {results['total_return']:.2f}%")
     print(f"Annualized Return: {results['annualized_return']:.2f}%")
-    print(f"Total Rebalances: {results['rebalances_performed']}")
+    print(f"Number of Rebalances: {results['rebalances_performed']}")
+    print(f"Rebalancing Frequency: Exactly 365 calendar days")
 
 if __name__ == "__main__":
     main()
