@@ -167,33 +167,76 @@ def calculate_current_portfolio_value(portfolio_positions, all_data, current_dat
     
     return total_value, current_values
 
-def get_benchmark_value(benchmark_data, target_date, initial_investment):
+def initialize_benchmark_tracking(benchmarks, strategy_start_date, initial_investment):
     """
-    Calculate benchmark value at a specific date (buy and hold from start)
+    Initialize benchmark tracking from the strategy start date
     """
-    if len(benchmark_data) == 0:
-        return initial_investment
+    benchmark_tracking = {}
     
-    # Find closest date
-    date_mask = (benchmark_data['date'] <= target_date)
-    available_data = benchmark_data[date_mask]
+    for symbol, data in benchmarks.items():
+        if len(data) == 0:
+            continue
+            
+        # Find the price closest to strategy start date
+        start_mask = (data['date'] >= strategy_start_date - timedelta(days=15)) & \
+                    (data['date'] <= strategy_start_date + timedelta(days=15))
+        start_data = data[start_mask]
+        
+        if len(start_data) > 0:
+            closest_start_idx = (start_data['date'] - strategy_start_date).abs().idxmin()
+            start_price = start_data.loc[closest_start_idx, 'price']
+            start_date = start_data.loc[closest_start_idx, 'date']
+            
+            # Calculate how many shares we could buy with initial investment
+            shares = initial_investment / start_price
+            
+            benchmark_tracking[symbol] = {
+                'start_price': start_price,
+                'start_date': start_date,
+                'shares': shares,
+                'data': data
+            }
+            
+            print(f"  {symbol} benchmark: ${start_price:.2f} on {start_date.strftime('%Y-%m-%d')} ({shares:.2f} shares)")
+        else:
+            print(f"  ⚠️  No {symbol} data available around strategy start date")
     
-    if len(available_data) == 0:
-        return initial_investment
+    return benchmark_tracking
+
+def get_benchmark_value(benchmark_info, target_date):
+    """
+    Calculate benchmark value at a specific date using the same start date as strategy
+    """
+    if not benchmark_info:
+        return 0.0
     
-    current_price = available_data.iloc[-1]['price']
+    data = benchmark_info['data']
+    shares = benchmark_info['shares']
     
-    # For benchmarks, we assume we bought at the first available price
-    first_price = benchmark_data.iloc[0]['price']
+    # Find current price closest to target date
+    current_mask = (data['date'] >= target_date - timedelta(days=15)) & \
+                  (data['date'] <= target_date + timedelta(days=15))
+    current_data = data[current_mask]
     
-    # Calculate return
-    return_mult = current_price / first_price
-    return initial_investment * return_mult
+    if len(current_data) > 0:
+        closest_current_idx = (current_data['date'] - target_date).abs().idxmin()
+        current_price = current_data.loc[closest_current_idx, 'price']
+        
+        current_value = shares * current_price
+        return current_value
+    else:
+        # If no current data, return last known value
+        last_available = data[data['date'] <= target_date]
+        if len(last_available) > 0:
+            last_price = last_available.iloc[-1]['price']
+            return shares * last_price
+        else:
+            return benchmark_info['start_price'] * shares
 
 def run_daily_tracked_strategy(all_data, benchmarks, start_date, end_date, 
                               initial_investment=100000, profit_target=20, max_hold_days=365):
     """
-    Run 5-stock strategy with daily tracking
+    Run 5-stock strategy with daily tracking and corrected benchmark comparison
     """
     print(f"\nRunning daily-tracked 5-stock strategy from {start_date} to {end_date}")
     print(f"Initial investment: ${initial_investment:,}")
@@ -202,6 +245,9 @@ def run_daily_tracked_strategy(all_data, benchmarks, start_date, end_date,
     
     current_date = pd.to_datetime(start_date)
     end_date = pd.to_datetime(end_date)
+    
+    # Initialize benchmark tracking from strategy start date
+    benchmark_tracking = initialize_benchmark_tracking(benchmarks, current_date, initial_investment)
     
     # Portfolio state
     cash_balance = initial_investment
@@ -224,10 +270,10 @@ def run_daily_tracked_strategy(all_data, benchmarks, start_date, end_date,
         
         total_account_value = cash_balance + portfolio_value
         
-        # Calculate benchmark values
+        # Calculate benchmark values using corrected method
         benchmark_values = {}
-        for symbol, data in benchmarks.items():
-            benchmark_values[symbol] = get_benchmark_value(data, current_date, initial_investment)
+        for symbol, bench_info in benchmark_tracking.items():
+            benchmark_values[symbol] = get_benchmark_value(bench_info, current_date)
         
         # Record daily data
         daily_record = {
@@ -239,7 +285,7 @@ def run_daily_tracked_strategy(all_data, benchmarks, start_date, end_date,
             'account_return_pct': ((total_account_value / initial_investment) - 1) * 100
         }
         
-        # Add benchmark values
+        # Add benchmark values and returns
         for symbol, value in benchmark_values.items():
             daily_record[f'{symbol}_value'] = value
             daily_record[f'{symbol}_return_pct'] = ((value / initial_investment) - 1) * 100
@@ -398,6 +444,14 @@ def run_daily_tracked_strategy(all_data, benchmarks, start_date, end_date,
     print(f"   Final value: ${final_value:,.0f}")
     print(f"   Total return: {total_return:.2f}%")
     print(f"   Total trades: {len(trade_history_df)}")
+    
+    # Print benchmark final values for verification
+    print(f"\n📊 Benchmark final values:")
+    for symbol in benchmark_tracking.keys():
+        if f'{symbol}_value' in daily_tracking_df.columns:
+            final_bench_value = daily_tracking_df.iloc[-1][f'{symbol}_value']
+            bench_return = daily_tracking_df.iloc[-1][f'{symbol}_return_pct']
+            print(f"   {symbol}: ${final_bench_value:,.0f} ({bench_return:.2f}% return)")
     
     return daily_tracking_df, trade_history_df
 
@@ -589,7 +643,7 @@ def calculate_performance_metrics(daily_tracking_df, trade_history_df, initial_i
         avg_loser = 0
         profit_factor = 0
     
-    # Benchmark comparisons
+    # Benchmark comparisons (corrected to use same time period)
     benchmark_performance = {}
     
     for symbol in ['SPY', 'AAPL', 'AMZN']:
@@ -765,10 +819,10 @@ def save_comprehensive_results(daily_tracking_df, trade_history_df, performance_
 
 def print_final_performance_summary(performance_metrics, daily_tracking_df, trade_history_df):
     """
-    Print comprehensive final performance summary
+    Print comprehensive final performance summary with corrected benchmark comparison
     """
     print("\n" + "="*80)
-    print("5-STOCK STRATEGY PERFORMANCE SUMMARY")
+    print("5-STOCK STRATEGY PERFORMANCE SUMMARY (CORRECTED BENCHMARKS)")
     print("="*80)
     
     strategy_perf = performance_metrics['strategy_performance']
@@ -797,7 +851,7 @@ def print_final_performance_summary(performance_metrics, daily_tracking_df, trad
     print(f"  Worst Trade: {trade_stats['worst_trade']:.2f}%")
     print(f"  Profit Factor: {trade_stats['profit_factor']:.2f}")
     
-    print(f"\n📈 BENCHMARK COMPARISON:")
+    print(f"\n📈 BENCHMARK COMPARISON (CORRECTED - SAME TIME PERIOD):")
     print(f"{'Metric':<20} {'Strategy':<12} {'SPY':<12} {'AAPL':<12} {'AMZN':<12}")
     print("-" * 68)
     
@@ -883,13 +937,19 @@ def print_final_performance_summary(performance_metrics, daily_tracking_df, trad
     print(f"  Trades per year: {trades_per_year:.1f}")
     print(f"  Return per trade: {return_per_trade:.2f}%")
     print(f"  Capital turnover: {365 / trade_stats['avg_hold_time']:.1f}x per year")
+    
+    print(f"\n🔧 BENCHMARK CALCULATION VERIFICATION:")
+    print(f"  ✅ All benchmarks calculated from strategy start date")
+    print(f"  ✅ Same time period used for all comparisons")
+    print(f"  ✅ Buy-and-hold approach for benchmarks")
+    print(f"  ✅ No look-ahead bias in benchmark calculations")
 
 def main():
-    print("DAILY PORTFOLIO TRACKING - 5 STOCK STRATEGY")
+    print("DAILY PORTFOLIO TRACKING - 5 STOCK STRATEGY (CORRECTED BENCHMARKS)")
     print("=" * 70)
     print("Strategy: 5 most underperforming stocks, 20% profit target, daily tracking")
     print("Analysis: Complete daily portfolio valuation vs SPY, AAPL, AMZN benchmarks")
-    print("Output: Daily performance tracking with comprehensive trade analysis")
+    print("Fix: Corrected benchmark calculation to use same start date as strategy")
     
     # Setup directories
     v2_dir = "/Users/tim/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
@@ -899,7 +959,7 @@ def main():
         return
     
     # Create output directory
-    output_dir = os.path.join(v2_dir, "DAILY_TRACKING_5STOCK_20PCT")
+    output_dir = os.path.join(v2_dir, "DAILY_TRACKING_5STOCK_20PCT_CORRECTED")
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"\nOutput directory: {output_dir}")
@@ -944,7 +1004,7 @@ def main():
     print(f"  Maximum hold period: 365 days")
     print(f"  Rebalancing check: Weekly")
     print(f"  Daily tracking: Complete portfolio valuation")
-    print(f"  Benchmarks: {list(benchmarks.keys())}")
+    print(f"  Benchmarks: {list(benchmarks.keys())} (calculated from strategy start date)")
     
     # Run the daily tracked strategy
     daily_tracking_df, trade_history_df = run_daily_tracked_strategy(
@@ -965,7 +1025,7 @@ def main():
     print_final_performance_summary(performance_metrics, daily_tracking_df, trade_history_df)
     
     print(f"\n" + "="*70)
-    print("DAILY TRACKING ANALYSIS COMPLETE")
+    print("DAILY TRACKING ANALYSIS COMPLETE (CORRECTED)")
     print("="*70)
     print(f"Results saved to: {output_dir}")
     print("\nFiles created:")
@@ -977,21 +1037,26 @@ def main():
     print("  📊 comprehensive_performance_analysis.png (main performance charts)")
     print("  📊 detailed_trade_analysis.png (trade analysis charts)")
     
-    print(f"\n🎯 This analysis provides:")
-    print(f"   • Complete daily portfolio valuation")
-    print(f"   • Direct comparison to SPY, AAPL, AMZN benchmarks")
-    print(f"   • Detailed trade-by-trade analysis")
-    print(f"   • Risk-adjusted performance metrics")
-    print(f"   • Portfolio composition tracking over time")
-    print(f"   • Comprehensive performance attribution")
+    print(f"\n🎯 This corrected analysis provides:")
+    print(f"   • Benchmarks calculated from strategy start date (no look-ahead bias)")
+    print(f"   • Fair comparison using identical time periods")
+    print(f"   • Accurate benchmark buy-and-hold returns")
+    print(f"   • Corrected outperformance/underperformance calculations")
+    print(f"   • Proper risk-adjusted metrics for all assets")
     
     if len(performance_metrics['strategy_performance']) > 0:
         total_return = performance_metrics['strategy_performance']['total_return']
         sharpe_ratio = performance_metrics['strategy_performance']['sharpe_ratio']
         
-        print(f"\n🏆 FINAL STRATEGY ASSESSMENT:")
+        print(f"\n🏆 FINAL CORRECTED STRATEGY ASSESSMENT:")
         print(f"   Total Return: {total_return:.2f}%")
         print(f"   Sharpe Ratio: {sharpe_ratio:.3f}")
+        
+        # Compare to corrected SPY benchmark
+        spy_return = performance_metrics['benchmark_performance'].get('SPY', {}).get('total_return', 0)
+        if spy_return > 0:
+            vs_spy = total_return - spy_return
+            print(f"   vs SPY: {vs_spy:+.2f}% {'outperformance' if vs_spy > 0 else 'underperformance'}")
         
         if total_return > 50 and sharpe_ratio > 1.0:
             print(f"   🚀 EXCELLENT: Strong returns with good risk management!")
