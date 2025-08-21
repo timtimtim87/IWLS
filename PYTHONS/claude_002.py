@@ -1,81 +1,4 @@
-def calculate_forward_returns_single_asset(asset_name, iwls_data, zscore_data, forward_days=365):
-    """
-    Calculate 365-day forward maximum gains for a single asset
-    """
-    print(f"  Analyzing {asset_name}...")
-    
-    forward_returns = []
-    
-    # Use IWLS data as base, merge with Z-score data
-    data = iwls_data.copy()
-    
-    # Merge with Z-score data if available
-    if zscore_data is not None:
-        data = data.merge(zscore_data[['date', 'z_score']], on='date', how='left')
-    else:
-        data['z_score'] = np.nan
-    
-    # Only use data where we have valid IWLS calculations (after the 1500-day lookback)
-    valid_data = data.dropna(subset=['price_deviation', 'trend_line_value']).copy()
-    
-    print(f"    Valid IWLS data points: {len(valid_data)}")
-    print(f"    Date range: {valid_data['date'].min()} to {valid_data['date'].max()}")
-    
-    # Calculate forward returns for each entry point
-    for i in range(len(valid_data) - forward_days):
-        current_row = valid_data.iloc[i]
-        current_price = current_row['price']
-        current_deviation = current_row['price_deviation']
-        current_zscore = current_row.get('z_score', np.nan)
-        
-        # Get future data for next 365 days
-        entry_date = current_row['date']
-        end_date = entry_date + timedelta(days=forward_days)
-        
-        # Get future prices within the forward window
-        future_mask = (valid_data['date'] > entry_date) & (valid_data['date'] <= end_date)
-        future_data = valid_data[future_mask]
-        
-        if len(future_data) >= forward_days * 0.5:  # Need at least 50% of trading days
-            # Calculate various forward return metrics
-            max_price = future_data['price'].max()
-            min_price = future_data['price'].min()
-            final_price = future_data['price'].iloc[-1]
-            
-            # Calculate returns
-            max_gain = ((max_price / current_price) - 1) * 100
-            max_loss = ((min_price / current_price) - 1) * 100
-            final_return = ((final_price / current_price) - 1) * 100
-            
-            # Calculate time to max gain
-            max_idx = future_data['price'].idxmax()
-            max_gain_date = future_data.loc[max_idx, 'date']
-            days_to_max = (max_gain_date - entry_date).days
-            
-            # Categorize into bins
-            deviation_bin = get_deviation_bin(current_deviation)
-            zscore_bin = get_zscore_bin(current_zscore) if not pd.isna(current_zscore) else 'No Z-Score'
-            
-            forward_returns.append({
-                'asset': asset_name,
-                'entry_date': entry_date,
-                'entry_price': current_price,
-                'price_deviation': current_deviation,
-                'z_score': current_zscore,
-                'deviation_bin': deviation_bin,
-                'zscore_bin': zscore_bin,
-                'max_gain_365d': max_gain,
-                'max_loss_365d': max_loss,
-                'final_return_365d': final_return,
-                'days_to_max_gain': days_to_max,
-                'max_price': max_price,
-                'min_price': min_price,
-                'final_price': final_price,
-                'volatility_365d': future_data['price'].pct_change().std() * np.sqrt(252) * 100
-            })
-    
-    print(f"    Generated {len(forward_returns)} forward return samples")
-    return pd.DataFrame(forward_returns)import pandas as pd
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -85,54 +8,7 @@ import os
 import glob
 from collections import defaultdict
 from scipy import stats
-import matplotlib.patches as mpatches
 warnings.filterwarnings('ignore')
-
-def load_iwls_results():
-    """
-    Load all IWLS results from the V2 analysis
-    """
-    base_dir = "/Users/tim/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
-    
-    if not os.path.exists(base_dir):
-        print("❌ IWLS_ANALYSIS_V2 directory not found. Run the IWLS analysis first.")
-        return {}
-    
-    all_results = {}
-    asset_dirs = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))]
-    
-    print(f"Loading IWLS results for {len(asset_dirs)} assets...")
-    
-    for asset_dir in asset_dirs:
-        asset_path = os.path.join(base_dir, asset_dir)
-        iwls_file = os.path.join(asset_path, f"{asset_dir}_iwls_results.csv")
-        zscore_file = os.path.join(asset_path, f"{asset_dir}_zscore_analysis.csv")
-        
-        if os.path.exists(iwls_file):
-            try:
-                # Load main IWLS results
-                df = pd.read_csv(iwls_file)
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.dropna()
-                
-                # Load Z-score analysis if available
-                zscore_df = None
-                if os.path.exists(zscore_file):
-                    zscore_df = pd.read_csv(zscore_file)
-                    zscore_df['date'] = pd.to_datetime(zscore_df['date'])
-                
-                all_results[asset_dir] = {
-                    'iwls_data': df,
-                    'zscore_data': zscore_df
-                }
-                
-                print(f"  ✅ {asset_dir}: {len(df)} data points")
-                
-            except Exception as e:
-                print(f"  ❌ Error loading {asset_dir}: {e}")
-    
-    print(f"Successfully loaded {len(all_results)} assets")
-    return all_results
 
 def get_deviation_bin(deviation):
     """
@@ -181,11 +57,40 @@ def get_deviation_bin(deviation):
     else:
         return "<-50%"
 
+def get_absolute_deviation_bin(abs_deviation):
+    """
+    Categorize absolute deviation magnitude into 5% bins
+    """
+    if abs_deviation >= 50:
+        return ">50%"
+    elif abs_deviation >= 45:
+        return "45% to 50%"
+    elif abs_deviation >= 40:
+        return "40% to 45%"
+    elif abs_deviation >= 35:
+        return "35% to 40%"
+    elif abs_deviation >= 30:
+        return "30% to 35%"
+    elif abs_deviation >= 25:
+        return "25% to 30%"
+    elif abs_deviation >= 20:
+        return "20% to 25%"
+    elif abs_deviation >= 15:
+        return "15% to 20%"
+    elif abs_deviation >= 10:
+        return "10% to 15%"
+    elif abs_deviation >= 5:
+        return "5% to 10%"
+    else:
+        return "0% to 5%"
+
 def get_zscore_bin(z_score):
     """
     Categorize Z-score into bins
     """
-    if z_score >= 3:
+    if pd.isna(z_score):
+        return "No Z-Score"
+    elif z_score >= 3:
         return ">+3σ"
     elif z_score >= 2.5:
         return "+2.5σ to +3σ"
@@ -212,136 +117,143 @@ def get_zscore_bin(z_score):
     else:
         return "<-3σ"
 
-def calculate_forward_returns_single_asset(asset_name, iwls_data, zscore_data, forward_days=365):
+def load_asset_data(asset_name, v2_dir):
+    """
+    Load IWLS and Z-score data for a single asset
+    """
+    asset_dir = os.path.join(v2_dir, asset_name)
+    
+    # Load main IWLS results
+    iwls_file = os.path.join(asset_dir, f"{asset_name}_iwls_results.csv")
+    if not os.path.exists(iwls_file):
+        return None, None
+    
+    iwls_df = pd.read_csv(iwls_file)
+    iwls_df['date'] = pd.to_datetime(iwls_df['date'])
+    iwls_df = iwls_df.sort_values('date').reset_index(drop=True)
+    
+    # Load Z-score data if available
+    zscore_file = os.path.join(asset_dir, f"{asset_name}_zscore_analysis.csv")
+    zscore_df = None
+    if os.path.exists(zscore_file):
+        zscore_df = pd.read_csv(zscore_file)
+        zscore_df['date'] = pd.to_datetime(zscore_df['date'])
+    
+    return iwls_df, zscore_df
+
+def calculate_forward_returns_single_asset(asset_name, iwls_df, zscore_df=None, forward_days=365):
     """
     Calculate 365-day forward maximum gains for a single asset
     """
     print(f"  Analyzing {asset_name}...")
     
-    forward_returns = []
+    # Filter to only valid IWLS data (non-NaN deviations and prices)
+    valid_data = iwls_df.dropna(subset=['price_deviation', 'price']).copy()
     
-    # Use IWLS data as base, merge with Z-score data
-    data = iwls_data.copy()
+    if len(valid_data) < forward_days + 100:
+        print(f"    Insufficient data for {asset_name} ({len(valid_data)} points)")
+        return pd.DataFrame()
     
     # Merge with Z-score data if available
-    if zscore_data is not None:
-        data = data.merge(zscore_data[['date', 'z_score']], on='date', how='left')
+    if zscore_df is not None:
+        valid_data = valid_data.merge(zscore_df[['date', 'z_score']], on='date', how='left')
     else:
-        data['z_score'] = np.nan
+        valid_data['z_score'] = np.nan
     
-    # Calculate forward returns for each entry point
-    for i in range(len(data) - forward_days):
-        current_row = data.iloc[i]
-        current_price = current_row['price']
-        current_deviation = current_row['price_deviation']
-        current_zscore = current_row.get('z_score', np.nan)
-        
-        # Skip if essential data is missing
-        if pd.isna(current_price) or pd.isna(current_deviation):
-            continue
-        
-        # Get future prices for next 365 calendar days
+    forward_returns = []
+    
+    # Calculate forward returns for each valid entry point
+    for i in range(len(valid_data) - forward_days):
+        current_row = valid_data.iloc[i]
         entry_date = current_row['date']
+        entry_price = current_row['price']
+        price_deviation = current_row['price_deviation']
+        z_score = current_row.get('z_score', np.nan)
+        
+        # Get future data for the next 365 calendar days
         end_date = entry_date + timedelta(days=forward_days)
+        future_mask = (valid_data['date'] > entry_date) & (valid_data['date'] <= end_date)
+        future_data = valid_data[future_mask]
         
-        future_data = data[(data['date'] > entry_date) & (data['date'] <= end_date)]
+        # Need at least 70% of expected trading days (roughly 255 trading days in 365 calendar days)
+        min_required_days = int(forward_days * 0.5)  # More lenient: 50%
         
-        if len(future_data) >= forward_days * 0.7:  # Need at least 70% of days
-            # Calculate various forward return metrics
-            max_price = future_data['price'].max()
-            min_price = future_data['price'].min()
-            final_price = future_data['price'].iloc[-1]
+        if len(future_data) >= min_required_days:
+            # Calculate forward return metrics
+            future_prices = future_data['price']
+            max_price = future_prices.max()
+            min_price = future_prices.min()
+            final_price = future_prices.iloc[-1]
             
             # Calculate returns
-            max_gain = ((max_price / current_price) - 1) * 100
-            max_loss = ((min_price / current_price) - 1) * 100
-            final_return = ((final_price / current_price) - 1) * 100
+            max_gain = ((max_price / entry_price) - 1) * 100
+            max_loss = ((min_price / entry_price) - 1) * 100
+            final_return = ((final_price / entry_price) - 1) * 100
             
-            # Calculate time to max gain
-            max_idx = future_data['price'].idxmax()
+            # Find time to max gain
+            max_idx = future_prices.idxmax()
             max_gain_date = future_data.loc[max_idx, 'date']
             days_to_max = (max_gain_date - entry_date).days
             
-            # Categorize into bins
-            deviation_bin = get_deviation_bin(current_deviation)
-            zscore_bin = get_zscore_bin(current_zscore) if not pd.isna(current_zscore) else 'No Z-Score'
+            # Categorize by bins
+            deviation_bin = get_deviation_bin(price_deviation)
+            abs_deviation_bin = get_absolute_deviation_bin(abs(price_deviation))
+            zscore_bin = get_zscore_bin(z_score)
             
             forward_returns.append({
                 'asset': asset_name,
                 'entry_date': entry_date,
-                'entry_price': current_price,
-                'price_deviation': current_deviation,
-                'z_score': current_zscore,
+                'entry_price': entry_price,
+                'price_deviation': price_deviation,
+                'absolute_deviation': abs(price_deviation),
+                'z_score': z_score,
                 'deviation_bin': deviation_bin,
+                'abs_deviation_bin': abs_deviation_bin,
                 'zscore_bin': zscore_bin,
                 'max_gain_365d': max_gain,
                 'max_loss_365d': max_loss,
                 'final_return_365d': final_return,
                 'days_to_max_gain': days_to_max,
-                'max_price': max_price,
-                'min_price': min_price,
-                'final_price': final_price,
-                'volatility_365d': future_data['price'].pct_change().std() * np.sqrt(252) * 100
+                'future_data_points': len(future_data)
             })
     
-    return pd.DataFrame(forward_returns)
+    result_df = pd.DataFrame(forward_returns)
+    print(f"    Generated {len(result_df)} forward return samples")
+    return result_df
 
-def analyze_all_assets_forward_returns(all_results):
+def analyze_bins_performance(df, bin_column, bin_name):
     """
-    Analyze forward returns for all assets
+    Analyze performance by bins (deviation, absolute deviation, or Z-score)
     """
-    print("\nCalculating 365-day forward returns for all assets...")
-    
-    all_forward_returns = []
-    
-    for asset_name, asset_data in all_results.items():
-        iwls_data = asset_data['iwls_data']
-        zscore_data = asset_data['zscore_data']
-        
-        asset_forward_returns = calculate_forward_returns_single_asset(
-            asset_name, iwls_data, zscore_data
-        )
-        
-        if len(asset_forward_returns) > 0:
-            all_forward_returns.append(asset_forward_returns)
-            print(f"    {asset_name}: {len(asset_forward_returns)} forward return samples")
-    
-    if all_forward_returns:
-        combined_df = pd.concat(all_forward_returns, ignore_index=True)
-        print(f"\nTotal forward return samples: {len(combined_df):,}")
-        return combined_df
-    else:
-        print("No forward return data generated!")
+    if len(df) == 0:
         return pd.DataFrame()
-
-def analyze_returns_by_deviation_bins(forward_returns_df):
-    """
-    Analyze returns by 5% deviation bins
-    """
-    print("\nAnalyzing returns by deviation bins...")
     
-    # Define bin order for proper sorting
-    bin_order = [">+50%", "+45% to +50%", "+40% to +45%", "+35% to +40%", "+30% to +35%", 
-                 "+25% to +30%", "+20% to +25%", "+15% to +20%", "+10% to +15%", "+5% to +10%", 
-                 "-5% to +5%", "-10% to -5%", "-15% to -10%", "-20% to -15%", "-25% to -20%", 
-                 "-30% to -25%", "-35% to -30%", "-40% to -35%", "-45% to -40%", "-50% to -45%", "<-50%"]
+    # Define bin orders for proper sorting
+    if bin_column == 'deviation_bin':
+        bin_order = [">+50%", "+45% to +50%", "+40% to +45%", "+35% to +40%", "+30% to +35%", 
+                     "+25% to +30%", "+20% to +25%", "+15% to +20%", "+10% to +15%", "+5% to +10%", 
+                     "-5% to +5%", "-10% to -5%", "-15% to -10%", "-20% to -15%", "-25% to -20%", 
+                     "-30% to -25%", "-35% to -30%", "-40% to -35%", "-45% to -40%", "-50% to -45%", "<-50%"]
+    elif bin_column == 'abs_deviation_bin':
+        bin_order = ["0% to 5%", "5% to 10%", "10% to 15%", "15% to 20%", "20% to 25%", 
+                     "25% to 30%", "30% to 35%", "35% to 40%", "40% to 45%", "45% to 50%", ">50%"]
+    else:  # zscore_bin
+        bin_order = [">+3σ", "+2.5σ to +3σ", "+2σ to +2.5σ", "+1.5σ to +2σ", "+1σ to +1.5σ", 
+                     "+0.5σ to +1σ", "-0.5σ to +0.5σ", "-1σ to -0.5σ", "-1.5σ to -1σ", 
+                     "-2σ to -1.5σ", "-2.5σ to -2σ", "-3σ to -2.5σ", "<-3σ", "No Z-Score"]
     
-    deviation_analysis = []
+    analysis_results = []
     
-    for bin_name in bin_order:
-        bin_data = forward_returns_df[forward_returns_df['deviation_bin'] == bin_name]
+    for bin_value in bin_order:
+        bin_data = df[df[bin_column] == bin_value]
         
-        if len(bin_data) >= 10:  # Need minimum samples
-            # Calculate comprehensive statistics
+        if len(bin_data) >= 10:  # Minimum sample size
             max_gains = bin_data['max_gain_365d']
             final_returns = bin_data['final_return_365d']
             
-            analysis = {
-                'deviation_bin': bin_name,
+            analysis_results.append({
+                f'{bin_name}_bin': bin_value,
                 'sample_count': len(bin_data),
-                'assets_count': bin_data['asset'].nunique(),
-                
-                # Max gain statistics
                 'avg_max_gain': max_gains.mean(),
                 'median_max_gain': max_gains.median(),
                 'std_max_gain': max_gains.std(),
@@ -349,136 +261,289 @@ def analyze_returns_by_deviation_bins(forward_returns_df):
                 'max_max_gain': max_gains.max(),
                 'q25_max_gain': max_gains.quantile(0.25),
                 'q75_max_gain': max_gains.quantile(0.75),
-                
-                # Final return statistics
                 'avg_final_return': final_returns.mean(),
                 'median_final_return': final_returns.median(),
-                'std_final_return': final_returns.std(),
-                
-                # Success rates
                 'success_rate_positive': (final_returns > 0).mean() * 100,
                 'success_rate_10pct': (max_gains > 10).mean() * 100,
                 'success_rate_25pct': (max_gains > 25).mean() * 100,
                 'success_rate_50pct': (max_gains > 50).mean() * 100,
                 'success_rate_100pct': (max_gains > 100).mean() * 100,
-                
-                # Risk metrics
                 'avg_max_loss': bin_data['max_loss_365d'].mean(),
                 'worst_max_loss': bin_data['max_loss_365d'].min(),
                 'avg_days_to_max': bin_data['days_to_max_gain'].mean(),
-                'avg_volatility': bin_data['volatility_365d'].mean(),
-                
-                # Risk-adjusted returns
-                'sharpe_ratio': final_returns.mean() / final_returns.std() if final_returns.std() > 0 else 0,
-                'gain_to_loss_ratio': max_gains.mean() / abs(bin_data['max_loss_365d'].mean()) if bin_data['max_loss_365d'].mean() < 0 else np.inf
-            }
-            
-            deviation_analysis.append(analysis)
-    
-    return pd.DataFrame(deviation_analysis)
-
-def analyze_returns_by_zscore_bins(forward_returns_df):
-    """
-    Analyze returns by Z-score bins
-    """
-    print("\nAnalyzing returns by Z-score bins...")
-    
-    # Filter out rows without Z-scores
-    zscore_data = forward_returns_df[forward_returns_df['zscore_bin'] != 'No Z-Score'].copy()
-    
-    if len(zscore_data) == 0:
-        print("No Z-score data available")
-        return pd.DataFrame()
-    
-    # Define Z-score bin order
-    zscore_bin_order = [">+3σ", "+2.5σ to +3σ", "+2σ to +2.5σ", "+1.5σ to +2σ", "+1σ to +1.5σ", 
-                        "+0.5σ to +1σ", "-0.5σ to +0.5σ", "-1σ to -0.5σ", "-1.5σ to -1σ", 
-                        "-2σ to -1.5σ", "-2.5σ to -2σ", "-3σ to -2.5σ", "<-3σ"]
-    
-    zscore_analysis = []
-    
-    for bin_name in zscore_bin_order:
-        bin_data = zscore_data[zscore_data['zscore_bin'] == bin_name]
-        
-        if len(bin_data) >= 10:  # Need minimum samples
-            max_gains = bin_data['max_gain_365d']
-            final_returns = bin_data['final_return_365d']
-            
-            analysis = {
-                'zscore_bin': bin_name,
-                'sample_count': len(bin_data),
-                'assets_count': bin_data['asset'].nunique(),
-                'avg_zscore': bin_data['z_score'].mean(),
-                
-                # Max gain statistics
-                'avg_max_gain': max_gains.mean(),
-                'median_max_gain': max_gains.median(),
-                'std_max_gain': max_gains.std(),
-                'q25_max_gain': max_gains.quantile(0.25),
-                'q75_max_gain': max_gains.quantile(0.75),
-                
-                # Final return statistics
-                'avg_final_return': final_returns.mean(),
-                'median_final_return': final_returns.median(),
-                
-                # Success rates
-                'success_rate_positive': (final_returns > 0).mean() * 100,
-                'success_rate_25pct': (max_gains > 25).mean() * 100,
-                'success_rate_50pct': (max_gains > 50).mean() * 100,
-                'success_rate_100pct': (max_gains > 100).mean() * 100,
-                
-                # Risk metrics
-                'avg_max_loss': bin_data['max_loss_365d'].mean(),
-                'avg_days_to_max': bin_data['days_to_max_gain'].mean(),
                 'sharpe_ratio': final_returns.mean() / final_returns.std() if final_returns.std() > 0 else 0
-            }
-            
-            zscore_analysis.append(analysis)
+            })
     
-    return pd.DataFrame(zscore_analysis)
+    return pd.DataFrame(analysis_results)
 
-def create_comprehensive_visualizations(forward_returns_df, deviation_analysis, zscore_analysis, output_dir):
+def create_asset_visualizations(df, asset_name, asset_dir):
     """
-    Create comprehensive visualizations of forward returns analysis
+    Create comprehensive visualizations for a single asset
     """
-    print("\nCreating comprehensive visualizations...")
+    if len(df) < 50:
+        print(f"    Insufficient data for {asset_name} visualization")
+        return
     
-    # Set up the plotting style
-    plt.style.use('default')
-    sns.set_palette("husl")
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 12))
     
-    # Figure 1: Deviation Bins Analysis (6 subplots)
-    fig1 = plt.figure(figsize=(24, 20))
+    # Plot 1: Deviation vs Max Gain scatter
+    scatter = ax1.scatter(df['price_deviation'], df['max_gain_365d'], 
+                         c=df['days_to_max_gain'], cmap='viridis', alpha=0.6, s=30)
+    ax1.set_xlabel('Price Deviation from Trend (%)')
+    ax1.set_ylabel('365-Day Max Gain (%)')
+    ax1.set_title(f'{asset_name}: Deviation vs Max Gain (colored by days to max)', fontweight='bold')
+    ax1.grid(True, alpha=0.3)
+    plt.colorbar(scatter, ax=ax1, label='Days to Max Gain')
     
-    # Plot 1: Average Max Gains by Deviation Bin
-    ax1 = plt.subplot(3, 2, 1)
-    if len(deviation_analysis) > 0:
-        bars = ax1.bar(range(len(deviation_analysis)), deviation_analysis['avg_max_gain'], 
-                      color=['darkred' if '+' in bin_name and bin_name != '-5% to +5%' 
-                            else 'darkgreen' if '-' in bin_name and bin_name != '-5% to +5%' 
-                            else 'gray' for bin_name in deviation_analysis['deviation_bin']], alpha=0.8)
+    # Add trend line
+    if len(df) > 10:
+        z = np.polyfit(df['price_deviation'], df['max_gain_365d'], 1)
+        p = np.poly1d(z)
+        x_trend = np.linspace(df['price_deviation'].min(), df['price_deviation'].max(), 100)
+        ax1.plot(x_trend, p(x_trend), "r--", alpha=0.8, linewidth=2, 
+                label=f'Trend: {z[0]:.2f}x + {z[1]:.1f}')
+        ax1.legend()
+    
+    # Plot 2: Max gain distribution
+    ax2.hist(df['max_gain_365d'], bins=40, alpha=0.7, color='green', edgecolor='black')
+    ax2.axvline(df['max_gain_365d'].mean(), color='red', linestyle='--', linewidth=2,
+               label=f'Mean: {df["max_gain_365d"].mean():.1f}%')
+    ax2.axvline(df['max_gain_365d'].median(), color='blue', linestyle='--', linewidth=2,
+               label=f'Median: {df["max_gain_365d"].median():.1f}%')
+    ax2.set_xlabel('365-Day Max Gain (%)')
+    ax2.set_ylabel('Frequency')
+    ax2.set_title(f'{asset_name}: Distribution of Max Gains', fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Time series of entry points
+    ax3.scatter(df['entry_date'], df['price_deviation'], 
+               c=df['max_gain_365d'], cmap='RdYlGn', s=25, alpha=0.7)
+    ax3.set_xlabel('Entry Date')
+    ax3.set_ylabel('Price Deviation (%)')
+    ax3.set_title(f'{asset_name}: Entry Points Over Time (colored by future max gain)', fontweight='bold')
+    ax3.grid(True, alpha=0.3)
+    ax3.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+    
+    # Plot 4: Box plot of gains by deviation ranges
+    # Create deviation ranges for box plot
+    deviation_ranges = pd.cut(df['price_deviation'], bins=8, precision=1)
+    box_data = []
+    box_labels = []
+    
+    for range_val in deviation_ranges.unique():
+        if pd.notna(range_val):
+            range_data = df[deviation_ranges == range_val]['max_gain_365d']
+            if len(range_data) >= 5:  # Minimum for meaningful box plot
+                box_data.append(range_data.values)
+                box_labels.append(f'{range_val.left:.1f} to {range_val.right:.1f}%')
+    
+    if box_data:
+        bp = ax4.boxplot(box_data, labels=box_labels, patch_artist=True)
+        for patch in bp['boxes']:
+            patch.set_facecolor('lightblue')
+            patch.set_alpha(0.7)
         
+        ax4.set_xticklabels(box_labels, rotation=45, ha='right')
+        ax4.set_ylabel('Max Gain Distribution (%)')
+        ax4.set_xlabel('Deviation Range (%)')
+        ax4.set_title(f'{asset_name}: Max Gain Distribution by Deviation Range', fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(f"{asset_dir}/{asset_name}_forward_returns_analysis.png", dpi=300, bbox_inches='tight')
+    plt.close()
+
+def process_single_asset(asset_name, v2_dir):
+    """
+    Process forward returns analysis for a single asset
+    """
+    print(f"\nProcessing {asset_name}...")
+    
+    # Load asset data
+    iwls_df, zscore_df = load_asset_data(asset_name, v2_dir)
+    if iwls_df is None:
+        print(f"  ❌ Could not load data for {asset_name}")
+        return False
+    
+    # Calculate forward returns
+    forward_returns_df = calculate_forward_returns_single_asset(asset_name, iwls_df, zscore_df)
+    
+    if len(forward_returns_df) == 0:
+        print(f"  ❌ No forward returns data generated for {asset_name}")
+        return False
+    
+    # Asset directory
+    asset_dir = os.path.join(v2_dir, asset_name)
+    
+    # Analyze by different bin types
+    deviation_analysis = analyze_bins_performance(forward_returns_df, 'deviation_bin', 'deviation')
+    abs_deviation_analysis = analyze_bins_performance(forward_returns_df, 'abs_deviation_bin', 'abs_deviation')
+    zscore_analysis = analyze_bins_performance(
+        forward_returns_df[forward_returns_df['zscore_bin'] != 'No Z-Score'], 
+        'zscore_bin', 'zscore'
+    )
+    
+    # Save results to asset folder
+    forward_returns_df.to_csv(f"{asset_dir}/{asset_name}_forward_returns_365d.csv", index=False)
+    
+    if len(deviation_analysis) > 0:
+        deviation_analysis.to_csv(f"{asset_dir}/{asset_name}_deviation_bins_forward_analysis.csv", index=False)
+    
+    if len(abs_deviation_analysis) > 0:
+        abs_deviation_analysis.to_csv(f"{asset_dir}/{asset_name}_abs_deviation_bins_forward_analysis.csv", index=False)
+    
+    if len(zscore_analysis) > 0:
+        zscore_analysis.to_csv(f"{asset_dir}/{asset_name}_zscore_bins_forward_analysis.csv", index=False)
+    
+    # Create visualizations
+    create_asset_visualizations(forward_returns_df, asset_name, asset_dir)
+    
+    # Print summary
+    print(f"  ✅ {asset_name} completed:")
+    print(f"     • {len(forward_returns_df)} forward return samples")
+    print(f"     • {len(deviation_analysis)} deviation bins with data")
+    print(f"     • {len(abs_deviation_analysis)} absolute deviation bins with data")
+    print(f"     • {len(zscore_analysis)} Z-score bins with data")
+    print(f"     • Average max gain: {forward_returns_df['max_gain_365d'].mean():.2f}%")
+    print(f"     • Success rate (25%+ gain): {(forward_returns_df['max_gain_365d'] > 25).mean()*100:.1f}%")
+    
+    return True
+
+def create_summary_analysis(v2_dir):
+    """
+    Create cross-asset summary analysis from all individual results
+    """
+    print("\nCreating cross-asset summary analysis...")
+    
+    summary_dir = os.path.join(v2_dir, "FORWARD_RETURNS_SUMMARY")
+    os.makedirs(summary_dir, exist_ok=True)
+    
+    all_forward_returns = []
+    all_deviation_analysis = []
+    all_abs_deviation_analysis = []
+    all_zscore_analysis = []
+    
+    # Collect data from all asset folders
+    for asset_name in os.listdir(v2_dir):
+        asset_dir = os.path.join(v2_dir, asset_name)
+        if not os.path.isdir(asset_dir) or asset_name == "FORWARD_RETURNS_SUMMARY":
+            continue
+        
+        # Load forward returns data
+        forward_file = os.path.join(asset_dir, f"{asset_name}_forward_returns_365d.csv")
+        if os.path.exists(forward_file):
+            try:
+                df = pd.read_csv(forward_file)
+                all_forward_returns.append(df)
+            except Exception as e:
+                print(f"  Warning: Could not load {forward_file}: {e}")
+        
+        # Load bin analyses
+        for analysis_type, analysis_list in [
+            ('deviation_bins_forward_analysis', all_deviation_analysis),
+            ('abs_deviation_bins_forward_analysis', all_abs_deviation_analysis),
+            ('zscore_bins_forward_analysis', all_zscore_analysis)
+        ]:
+            analysis_file = os.path.join(asset_dir, f"{asset_name}_{analysis_type}.csv")
+            if os.path.exists(analysis_file):
+                try:
+                    df = pd.read_csv(analysis_file)
+                    df['asset'] = asset_name
+                    analysis_list.append(df)
+                except Exception as e:
+                    print(f"  Warning: Could not load {analysis_file}: {e}")
+    
+    # Combine and save summary data
+    if all_forward_returns:
+        combined_forward_returns = pd.concat(all_forward_returns, ignore_index=True)
+        combined_forward_returns.to_csv(f"{summary_dir}/ALL_ASSETS_forward_returns_365d.csv", index=False)
+        print(f"  ✅ Combined forward returns: {len(combined_forward_returns):,} samples")
+        
+        # Overall group analysis by bin types
+        group_deviation_analysis = analyze_bins_performance(combined_forward_returns, 'deviation_bin', 'deviation')
+        group_abs_deviation_analysis = analyze_bins_performance(combined_forward_returns, 'abs_deviation_bin', 'abs_deviation')
+        group_zscore_analysis = analyze_bins_performance(
+            combined_forward_returns[combined_forward_returns['zscore_bin'] != 'No Z-Score'], 
+            'zscore_bin', 'zscore'
+        )
+        
+        # Save group analyses
+        if len(group_deviation_analysis) > 0:
+            group_deviation_analysis.to_csv(f"{summary_dir}/GROUP_deviation_bins_analysis.csv", index=False)
+        if len(group_abs_deviation_analysis) > 0:
+            group_abs_deviation_analysis.to_csv(f"{summary_dir}/GROUP_abs_deviation_bins_analysis.csv", index=False)
+        if len(group_zscore_analysis) > 0:
+            group_zscore_analysis.to_csv(f"{summary_dir}/GROUP_zscore_bins_analysis.csv", index=False)
+        
+        # Asset performance summary
+        asset_summary = combined_forward_returns.groupby('asset').agg({
+            'max_gain_365d': ['count', 'mean', 'median', 'std'],
+            'final_return_365d': ['mean', 'median'],
+            'days_to_max_gain': 'mean',
+            'price_deviation': ['mean', 'std'],
+            'absolute_deviation': 'mean'
+        }).round(3)
+        
+        asset_summary.columns = ['_'.join(col).strip() for col in asset_summary.columns]
+        asset_summary = asset_summary.reset_index()
+        
+        # Add success rates
+        success_rates = combined_forward_returns.groupby('asset').apply(
+            lambda x: pd.Series({
+                'success_rate_positive': (x['final_return_365d'] > 0).mean() * 100,
+                'success_rate_25pct': (x['max_gain_365d'] > 25).mean() * 100,
+                'success_rate_50pct': (x['max_gain_365d'] > 50).mean() * 100,
+                'success_rate_100pct': (x['max_gain_365d'] > 100).mean() * 100
+            })
+        ).round(2)
+        
+        asset_summary = asset_summary.merge(success_rates, left_on='asset', right_index=True)
+        asset_summary.to_csv(f"{summary_dir}/ASSET_PERFORMANCE_COMPARISON.csv", index=False)
+        
+        print(f"  ✅ Asset performance summary: {len(asset_summary)} assets")
+        
+        # Create summary visualizations
+        create_summary_visualizations(group_deviation_analysis, group_abs_deviation_analysis, 
+                                    group_zscore_analysis, asset_summary, summary_dir)
+    
+    return summary_dir
+
+def create_summary_visualizations(deviation_analysis, abs_deviation_analysis, zscore_analysis, asset_summary, output_dir):
+    """
+    Create summary visualizations across all assets
+    """
+    print("  Creating summary visualizations...")
+    
+    # Figure 1: Deviation bins analysis
+    if len(deviation_analysis) > 0:
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 12))
+        
+        # Average max gains by deviation bin
+        colors = ['darkred' if '+' in bin_name and bin_name != '-5% to +5%' 
+                 else 'darkgreen' if '-' in bin_name and bin_name != '-5% to +5%' 
+                 else 'gray' for bin_name in deviation_analysis['deviation_bin']]
+        
+        bars1 = ax1.bar(range(len(deviation_analysis)), deviation_analysis['avg_max_gain'], 
+                       color=colors, alpha=0.8)
         ax1.set_xticks(range(len(deviation_analysis)))
         ax1.set_xticklabels(deviation_analysis['deviation_bin'], rotation=45, ha='right')
         ax1.set_ylabel('Average Max Gain (%)')
-        ax1.set_title('365-Day Average Maximum Gains by Deviation Bin', fontweight='bold')
+        ax1.set_title('365-Day Average Maximum Gains by Deviation Bin (All Assets)', fontweight='bold')
         ax1.grid(True, alpha=0.3)
         
         # Add value labels
-        for i, (bar, value, count) in enumerate(zip(bars, deviation_analysis['avg_max_gain'], 
+        for i, (bar, value, count) in enumerate(zip(bars1, deviation_analysis['avg_max_gain'], 
                                                    deviation_analysis['sample_count'])):
             ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(deviation_analysis['avg_max_gain'])*0.01,
-                    f'{value:.1f}%\n(n={count})', ha='center', va='bottom', fontsize=9, fontweight='bold')
-    
-    # Plot 2: Success Rate Distribution
-    ax2 = plt.subplot(3, 2, 2)
-    if len(deviation_analysis) > 0:
-        width = 0.2
-        x = np.arange(len(deviation_analysis))
+                    f'{value:.1f}%\n(n={count:,})', ha='center', va='bottom', fontsize=8, fontweight='bold')
         
-        ax2.bar(x - width*1.5, deviation_analysis['success_rate_25pct'], width, label='25%+ Gains', alpha=0.8, color='lightgreen')
-        ax2.bar(x - width*0.5, deviation_analysis['success_rate_50pct'], width, label='50%+ Gains', alpha=0.8, color='green')
-        ax2.bar(x + width*0.5, deviation_analysis['success_rate_100pct'], width, label='100%+ Gains', alpha=0.8, color='darkgreen')
+        # Success rates
+        width = 0.25
+        x = np.arange(len(deviation_analysis))
+        ax2.bar(x - width, deviation_analysis['success_rate_25pct'], width, label='25%+ Gains', alpha=0.8, color='lightgreen')
+        ax2.bar(x, deviation_analysis['success_rate_50pct'], width, label='50%+ Gains', alpha=0.8, color='green')
+        ax2.bar(x + width, deviation_analysis['success_rate_100pct'], width, label='100%+ Gains', alpha=0.8, color='darkgreen')
         
         ax2.set_xticks(x)
         ax2.set_xticklabels(deviation_analysis['deviation_bin'], rotation=45, ha='right')
@@ -486,99 +551,94 @@ def create_comprehensive_visualizations(forward_returns_df, deviation_analysis, 
         ax2.set_title('Success Rates by Deviation Bin', fontweight='bold')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
-    
-    # Plot 3: Box plot of max gains distribution
-    ax3 = plt.subplot(3, 2, 3)
-    if len(forward_returns_df) > 0:
-        # Sample bins with enough data for box plot
-        sample_bins = deviation_analysis[deviation_analysis['sample_count'] >= 50]['deviation_bin'].head(8)
-        box_data = []
-        box_labels = []
         
-        for bin_name in sample_bins:
-            bin_data = forward_returns_df[forward_returns_df['deviation_bin'] == bin_name]['max_gain_365d']
-            if len(bin_data) > 0:
-                box_data.append(bin_data.values)
-                box_labels.append(bin_name)
+        # Risk vs Return
+        ax3.scatter(deviation_analysis['avg_max_loss'], deviation_analysis['avg_max_gain'],
+                   c=deviation_analysis['sample_count'], cmap='viridis', s=100, alpha=0.7)
+        ax3.set_xlabel('Average Max Loss (%)')
+        ax3.set_ylabel('Average Max Gain (%)')
+        ax3.set_title('Risk vs Return by Deviation Bin', fontweight='bold')
+        ax3.grid(True, alpha=0.3)
         
-        if box_data:
-            bp = ax3.boxplot(box_data, labels=box_labels, patch_artist=True)
-            for patch in bp['boxes']:
-                patch.set_facecolor('lightblue')
-                patch.set_alpha(0.7)
-            
-            ax3.set_xticklabels(box_labels, rotation=45, ha='right')
-            ax3.set_ylabel('Max Gain Distribution (%)')
-            ax3.set_title('Distribution of Max Gains by Deviation Bin', fontweight='bold')
-            ax3.grid(True, alpha=0.3)
-    
-    # Plot 4: Risk vs Return Scatter
-    ax4 = plt.subplot(3, 2, 4)
-    if len(deviation_analysis) > 0:
-        scatter = ax4.scatter(deviation_analysis['avg_max_loss'], deviation_analysis['avg_max_gain'],
-                             c=deviation_analysis['sample_count'], cmap='viridis', s=100, alpha=0.7)
-        
-        for i, bin_name in enumerate(deviation_analysis['deviation_bin']):
-            ax4.annotate(bin_name, (deviation_analysis['avg_max_loss'].iloc[i], 
-                                   deviation_analysis['avg_max_gain'].iloc[i]),
-                        xytext=(5, 5), textcoords='offset points', fontsize=8)
-        
-        ax4.set_xlabel('Average Max Loss (%)')
-        ax4.set_ylabel('Average Max Gain (%)')
-        ax4.set_title('Risk vs Return by Deviation Bin', fontweight='bold')
-        plt.colorbar(scatter, ax=ax4, label='Sample Count')
+        # Sharpe ratios
+        colors_sharpe = ['green' if sr > 0.5 else 'orange' if sr > 0 else 'red' for sr in deviation_analysis['sharpe_ratio']]
+        bars4 = ax4.bar(range(len(deviation_analysis)), deviation_analysis['sharpe_ratio'], 
+                       color=colors_sharpe, alpha=0.8)
+        ax4.set_xticks(range(len(deviation_analysis)))
+        ax4.set_xticklabels(deviation_analysis['deviation_bin'], rotation=45, ha='right')
+        ax4.set_ylabel('Sharpe Ratio')
+        ax4.set_title('Risk-Adjusted Returns by Deviation Bin', fontweight='bold')
+        ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
         ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(f"{output_dir}/GROUP_deviation_bins_analysis.png", dpi=300, bbox_inches='tight')
+        plt.close()
     
-    # Plot 5: Time to Maximum Gain
-    ax5 = plt.subplot(3, 2, 5)
-    if len(deviation_analysis) > 0:
-        bars = ax5.bar(range(len(deviation_analysis)), deviation_analysis['avg_days_to_max'], 
-                      alpha=0.8, color='orange')
-        ax5.set_xticks(range(len(deviation_analysis)))
-        ax5.set_xticklabels(deviation_analysis['deviation_bin'], rotation=45, ha='right')
-        ax5.set_ylabel('Average Days to Max Gain')
-        ax5.set_title('Time to Maximum Gain by Deviation Bin', fontweight='bold')
-        ax5.grid(True, alpha=0.3)
+    # Figure 2: Absolute deviation bins analysis
+    if len(abs_deviation_analysis) > 0:
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 12))
+        
+        # Average max gains by absolute deviation bin
+        bars1 = ax1.bar(range(len(abs_deviation_analysis)), abs_deviation_analysis['avg_max_gain'], 
+                       color='steelblue', alpha=0.8)
+        ax1.set_xticks(range(len(abs_deviation_analysis)))
+        ax1.set_xticklabels(abs_deviation_analysis['abs_deviation_bin'], rotation=45, ha='right')
+        ax1.set_ylabel('Average Max Gain (%)')
+        ax1.set_title('365-Day Average Maximum Gains by Absolute Deviation Magnitude', fontweight='bold')
+        ax1.grid(True, alpha=0.3)
         
         # Add value labels
-        for bar, value in zip(bars, deviation_analysis['avg_days_to_max']):
-            ax5.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(deviation_analysis['avg_days_to_max'])*0.01,
-                    f'{value:.0f}', ha='center', va='bottom', fontweight='bold')
-    
-    # Plot 6: Sharpe Ratio by Deviation Bin
-    ax6 = plt.subplot(3, 2, 6)
-    if len(deviation_analysis) > 0:
-        colors = ['green' if sr > 0.5 else 'orange' if sr > 0 else 'red' for sr in deviation_analysis['sharpe_ratio']]
-        bars = ax6.bar(range(len(deviation_analysis)), deviation_analysis['sharpe_ratio'], 
-                      color=colors, alpha=0.8)
-        ax6.set_xticks(range(len(deviation_analysis)))
-        ax6.set_xticklabels(deviation_analysis['deviation_bin'], rotation=45, ha='right')
-        ax6.set_ylabel('Sharpe Ratio')
-        ax6.set_title('Risk-Adjusted Returns (Sharpe Ratio) by Deviation Bin', fontweight='bold')
-        ax6.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        ax6.grid(True, alpha=0.3)
+        for i, (bar, value, count) in enumerate(zip(bars1, abs_deviation_analysis['avg_max_gain'], 
+                                                   abs_deviation_analysis['sample_count'])):
+            ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(abs_deviation_analysis['avg_max_gain'])*0.01,
+                    f'{value:.1f}%\n(n={count:,})', ha='center', va='bottom', fontsize=8, fontweight='bold')
         
-        # Add value labels
-        for bar, value in zip(bars, deviation_analysis['sharpe_ratio']):
-            ax6.text(bar.get_x() + bar.get_width()/2., 
-                    bar.get_height() + (0.1 if value >= 0 else -0.15),
-                    f'{value:.2f}', ha='center', 
-                    va='bottom' if value >= 0 else 'top', fontweight='bold')
+        # Success rates for absolute deviation
+        width = 0.25
+        x = np.arange(len(abs_deviation_analysis))
+        ax2.bar(x - width, abs_deviation_analysis['success_rate_25pct'], width, label='25%+ Gains', alpha=0.8, color='lightcoral')
+        ax2.bar(x, abs_deviation_analysis['success_rate_50pct'], width, label='50%+ Gains', alpha=0.8, color='red')
+        ax2.bar(x + width, abs_deviation_analysis['success_rate_100pct'], width, label='100%+ Gains', alpha=0.8, color='darkred')
+        
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(abs_deviation_analysis['abs_deviation_bin'], rotation=45, ha='right')
+        ax2.set_ylabel('Success Rate (%)')
+        ax2.set_title('Success Rates by Absolute Deviation Magnitude', fontweight='bold')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Sample count distribution
+        bars3 = ax3.bar(range(len(abs_deviation_analysis)), abs_deviation_analysis['sample_count'], 
+                       color='orange', alpha=0.8)
+        ax3.set_xticks(range(len(abs_deviation_analysis)))
+        ax3.set_xticklabels(abs_deviation_analysis['abs_deviation_bin'], rotation=45, ha='right')
+        ax3.set_ylabel('Sample Count')
+        ax3.set_title('Sample Distribution by Absolute Deviation Magnitude', fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        
+        # Time to max gain
+        bars4 = ax4.bar(range(len(abs_deviation_analysis)), abs_deviation_analysis['avg_days_to_max'], 
+                       color='purple', alpha=0.8)
+        ax4.set_xticks(range(len(abs_deviation_analysis)))
+        ax4.set_xticklabels(abs_deviation_analysis['abs_deviation_bin'], rotation=45, ha='right')
+        ax4.set_ylabel('Average Days to Max Gain')
+        ax4.set_title('Time to Maximum Gain by Absolute Deviation Magnitude', fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(f"{output_dir}/GROUP_abs_deviation_bins_analysis.png", dpi=300, bbox_inches='tight')
+        plt.close()
     
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/deviation_bins_comprehensive_analysis.png", dpi=300, bbox_inches='tight')
-    plt.close()
-    
-    # Figure 2: Z-Score Analysis (if data available)
+    # Figure 3: Z-score bins analysis (if data available)
     if len(zscore_analysis) > 0:
-        fig2 = plt.figure(figsize=(20, 12))
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 12))
         
-        # Z-Score Average Max Gains
-        ax1 = plt.subplot(2, 3, 1)
+        # Average max gains by Z-score bin
         colors = ['darkred' if '+' in bin_name else 'darkgreen' if '-' in bin_name else 'gray' 
                  for bin_name in zscore_analysis['zscore_bin']]
-        bars = ax1.bar(range(len(zscore_analysis)), zscore_analysis['avg_max_gain'], 
-                      color=colors, alpha=0.8)
+        bars1 = ax1.bar(range(len(zscore_analysis)), zscore_analysis['avg_max_gain'], 
+                       color=colors, alpha=0.8)
         ax1.set_xticks(range(len(zscore_analysis)))
         ax1.set_xticklabels(zscore_analysis['zscore_bin'], rotation=45, ha='right')
         ax1.set_ylabel('Average Max Gain (%)')
@@ -586,19 +646,17 @@ def create_comprehensive_visualizations(forward_returns_df, deviation_analysis, 
         ax1.grid(True, alpha=0.3)
         
         # Add value labels
-        for i, (bar, value, count) in enumerate(zip(bars, zscore_analysis['avg_max_gain'], 
+        for i, (bar, value, count) in enumerate(zip(bars1, zscore_analysis['avg_max_gain'], 
                                                    zscore_analysis['sample_count'])):
             ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(zscore_analysis['avg_max_gain'])*0.01,
-                    f'{value:.1f}%\n(n={count})', ha='center', va='bottom', fontsize=9, fontweight='bold')
+                    f'{value:.1f}%\n(n={count:,})', ha='center', va='bottom', fontsize=8, fontweight='bold')
         
-        # Z-Score Success Rates
-        ax2 = plt.subplot(2, 3, 2)
+        # Success rates for Z-score
         width = 0.25
         x = np.arange(len(zscore_analysis))
-        
-        ax2.bar(x - width, zscore_analysis['success_rate_25pct'], width, label='25%+ Gains', alpha=0.8, color='lightgreen')
-        ax2.bar(x, zscore_analysis['success_rate_50pct'], width, label='50%+ Gains', alpha=0.8, color='green')
-        ax2.bar(x + width, zscore_analysis['success_rate_100pct'], width, label='100%+ Gains', alpha=0.8, color='darkgreen')
+        ax2.bar(x - width, zscore_analysis['success_rate_25pct'], width, label='25%+ Gains', alpha=0.8, color='lightblue')
+        ax2.bar(x, zscore_analysis['success_rate_50pct'], width, label='50%+ Gains', alpha=0.8, color='blue')
+        ax2.bar(x + width, zscore_analysis['success_rate_100pct'], width, label='100%+ Gains', alpha=0.8, color='darkblue')
         
         ax2.set_xticks(x)
         ax2.set_xticklabels(zscore_analysis['zscore_bin'], rotation=45, ha='right')
@@ -607,712 +665,265 @@ def create_comprehensive_visualizations(forward_returns_df, deviation_analysis, 
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
-        # Z-Score vs Average Deviation
-        ax3 = plt.subplot(2, 3, 3)
-        ax3.scatter(zscore_analysis['avg_zscore'], zscore_analysis['avg_max_gain'], 
-                   s=zscore_analysis['sample_count']/10, alpha=0.7, color='blue')
-        
-        for i, bin_name in enumerate(zscore_analysis['zscore_bin']):
-            ax3.annotate(bin_name, (zscore_analysis['avg_zscore'].iloc[i], 
-                                   zscore_analysis['avg_max_gain'].iloc[i]),
-                        xytext=(5, 5), textcoords='offset points', fontsize=8)
-        
-        ax3.set_xlabel('Average Z-Score')
-        ax3.set_ylabel('Average Max Gain (%)')
-        ax3.set_title('Z-Score vs Average Max Gain', fontweight='bold')
+        # Sharpe ratios for Z-score
+        colors_sharpe = ['green' if sr > 0.5 else 'orange' if sr > 0 else 'red' for sr in zscore_analysis['sharpe_ratio']]
+        bars3 = ax3.bar(range(len(zscore_analysis)), zscore_analysis['sharpe_ratio'], 
+                       color=colors_sharpe, alpha=0.8)
+        ax3.set_xticks(range(len(zscore_analysis)))
+        ax3.set_xticklabels(zscore_analysis['zscore_bin'], rotation=45, ha='right')
+        ax3.set_ylabel('Sharpe Ratio')
+        ax3.set_title('Risk-Adjusted Returns by Z-Score Bin', fontweight='bold')
+        ax3.axhline(y=0, color='black', linestyle='-', alpha=0.5)
         ax3.grid(True, alpha=0.3)
         
-        # Z-Score Sharpe Ratios
-        ax4 = plt.subplot(2, 3, 4)
-        colors = ['green' if sr > 0.5 else 'orange' if sr > 0 else 'red' for sr in zscore_analysis['sharpe_ratio']]
-        bars = ax4.bar(range(len(zscore_analysis)), zscore_analysis['sharpe_ratio'], 
-                      color=colors, alpha=0.8)
+        # Sample count for Z-score
+        bars4 = ax4.bar(range(len(zscore_analysis)), zscore_analysis['sample_count'], 
+                       color='teal', alpha=0.8)
         ax4.set_xticks(range(len(zscore_analysis)))
         ax4.set_xticklabels(zscore_analysis['zscore_bin'], rotation=45, ha='right')
-        ax4.set_ylabel('Sharpe Ratio')
-        ax4.set_title('Risk-Adjusted Returns by Z-Score Bin', fontweight='bold')
-        ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+        ax4.set_ylabel('Sample Count')
+        ax4.set_title('Sample Distribution by Z-Score Bin', fontweight='bold')
         ax4.grid(True, alpha=0.3)
         
-        # Days to Max Gain
-        ax5 = plt.subplot(2, 3, 5)
-        bars = ax5.bar(range(len(zscore_analysis)), zscore_analysis['avg_days_to_max'], 
-                      alpha=0.8, color='orange')
-        ax5.set_xticks(range(len(zscore_analysis)))
-        ax5.set_xticklabels(zscore_analysis['zscore_bin'], rotation=45, ha='right')
-        ax5.set_ylabel('Average Days to Max Gain')
-        ax5.set_title('Time to Maximum Gain by Z-Score Bin', fontweight='bold')
-        ax5.grid(True, alpha=0.3)
-        
-        # Sample size distribution
-        ax6 = plt.subplot(2, 3, 6)
-        bars = ax6.bar(range(len(zscore_analysis)), zscore_analysis['sample_count'], 
-                      alpha=0.8, color='steelblue')
-        ax6.set_xticks(range(len(zscore_analysis)))
-        ax6.set_xticklabels(zscore_analysis['zscore_bin'], rotation=45, ha='right')
-        ax6.set_ylabel('Sample Count')
-        ax6.set_title('Sample Size by Z-Score Bin', fontweight='bold')
-        ax6.grid(True, alpha=0.3)
-        
-        # Add value labels
-        for bar, value in zip(bars, zscore_analysis['sample_count']):
-            ax6.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(zscore_analysis['sample_count'])*0.01,
-                    f'{value}', ha='center', va='bottom', fontweight='bold')
-        
         plt.tight_layout()
-        plt.savefig(f"{output_dir}/zscore_bins_comprehensive_analysis.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{output_dir}/GROUP_zscore_bins_analysis.png", dpi=300, bbox_inches='tight')
         plt.close()
     
-    # Figure 3: Cross-Asset Heatmaps
-    create_asset_heatmaps(forward_returns_df, output_dir)
-    
-    print("  ✅ All visualizations created")
-
-def create_asset_heatmaps(forward_returns_df, output_dir):
-    """
-    Create heatmaps showing performance across assets and bins
-    """
-    print("  Creating asset performance heatmaps...")
-    
-    # Get top assets by sample count
-    asset_counts = forward_returns_df['asset'].value_counts()
-    top_assets = asset_counts.head(20).index.tolist()
-    
-    # Create deviation bin heatmap
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(20, 16))
-    
-    # Deviation bins heatmap
-    deviation_pivot = forward_returns_df[forward_returns_df['asset'].isin(top_assets)].pivot_table(
-        index='asset', 
-        columns='deviation_bin', 
-        values='max_gain_365d', 
-        aggfunc='mean'
-    )
-    
-    # Reorder columns by deviation level
-    bin_order = [">+50%", "+45% to +50%", "+40% to +45%", "+35% to +40%", "+30% to +35%", 
-                 "+25% to +30%", "+20% to +25%", "+15% to +20%", "+10% to +15%", "+5% to +10%", 
-                 "-5% to +5%", "-10% to -5%", "-15% to -10%", "-20% to -15%", "-25% to -20%", 
-                 "-30% to -25%", "-35% to -30%", "-40% to -35%", "-45% to -40%", "-50% to -45%", "<-50%"]
-    
-    available_bins = [bin_name for bin_name in bin_order if bin_name in deviation_pivot.columns]
-    deviation_pivot = deviation_pivot[available_bins]
-    
-    # Create heatmap
-    sns.heatmap(deviation_pivot, annot=True, fmt='.1f', cmap='RdYlGn', center=0, 
-                ax=ax1, cbar_kws={'label': 'Average Max Gain (%)'})
-    ax1.set_title('Average 365-Day Max Gains by Asset and Deviation Bin', fontweight='bold', fontsize=14)
-    ax1.set_xlabel('Deviation Bin')
-    ax1.set_ylabel('Asset')
-    
-    # Z-score bins heatmap (if data available)
-    zscore_data = forward_returns_df[
-        (forward_returns_df['asset'].isin(top_assets)) & 
-        (forward_returns_df['zscore_bin'] != 'No Z-Score')
-    ]
-    
-    if len(zscore_data) > 0:
-        zscore_pivot = zscore_data.pivot_table(
-            index='asset', 
-            columns='zscore_bin', 
-            values='max_gain_365d', 
-            aggfunc='mean'
-        )
+    # Figure 4: Asset performance comparison
+    if len(asset_summary) > 0:
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 12))
         
-        # Reorder Z-score columns
-        zscore_order = [">+3σ", "+2.5σ to +3σ", "+2σ to +2.5σ", "+1.5σ to +2σ", "+1σ to +1.5σ", 
-                       "+0.5σ to +1σ", "-0.5σ to +0.5σ", "-1σ to -0.5σ", "-1.5σ to -1σ", 
-                       "-2σ to -1.5σ", "-2.5σ to -2σ", "-3σ to -2.5σ", "<-3σ"]
+        # Filter for assets with meaningful sample sizes
+        significant_assets = asset_summary[asset_summary['max_gain_365d_count'] >= 100].copy()
+        if len(significant_assets) > 20:
+            significant_assets = significant_assets.nlargest(20, 'max_gain_365d_mean')
         
-        available_zscore_bins = [bin_name for bin_name in zscore_order if bin_name in zscore_pivot.columns]
-        if available_zscore_bins:
-            zscore_pivot = zscore_pivot[available_zscore_bins]
+        if len(significant_assets) > 0:
+            # Average max gain by asset
+            bars1 = ax1.bar(range(len(significant_assets)), significant_assets['max_gain_365d_mean'], 
+                           color='forestgreen', alpha=0.8)
+            ax1.set_xticks(range(len(significant_assets)))
+            ax1.set_xticklabels(significant_assets['asset'], rotation=45, ha='right')
+            ax1.set_ylabel('Average Max Gain (%)')
+            ax1.set_title('Top Assets by Average 365-Day Max Gain', fontweight='bold')
+            ax1.grid(True, alpha=0.3)
             
-            sns.heatmap(zscore_pivot, annot=True, fmt='.1f', cmap='RdYlGn', center=0, 
-                       ax=ax2, cbar_kws={'label': 'Average Max Gain (%)'})
-            ax2.set_title('Average 365-Day Max Gains by Asset and Z-Score Bin', fontweight='bold', fontsize=14)
-            ax2.set_xlabel('Z-Score Bin')
-            ax2.set_ylabel('Asset')
-        else:
-            ax2.text(0.5, 0.5, 'Insufficient Z-Score Data', ha='center', va='center', 
-                    transform=ax2.transAxes, fontsize=16)
-            ax2.set_title('Z-Score Analysis - Insufficient Data', fontweight='bold')
-    else:
-        ax2.text(0.5, 0.5, 'No Z-Score Data Available', ha='center', va='center', 
-                transform=ax2.transAxes, fontsize=16)
-        ax2.set_title('Z-Score Analysis - No Data Available', fontweight='bold')
-    
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/asset_performance_heatmaps.png", dpi=300, bbox_inches='tight')
-    plt.close()
-
-def create_individual_asset_reports(forward_returns_df, output_dir):
-    """
-    Create individual performance reports for top assets
-    """
-    print("  Creating individual asset reports...")
-    
-    # Get top 10 assets by sample count
-    asset_counts = forward_returns_df['asset'].value_counts()
-    top_assets = asset_counts.head(10).index.tolist()
-    
-    for asset in top_assets:
-        asset_data = forward_returns_df[forward_returns_df['asset'] == asset]
-        
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-        
-        # Deviation vs Max Gain scatter
-        ax1.scatter(asset_data['price_deviation'], asset_data['max_gain_365d'], 
-                   alpha=0.6, s=20, color='blue')
-        ax1.set_xlabel('Price Deviation (%)')
-        ax1.set_ylabel('365-Day Max Gain (%)')
-        ax1.set_title(f'{asset}: Deviation vs Max Gain', fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        
-        # Add trend line
-        if len(asset_data) > 10:
-            z = np.polyfit(asset_data['price_deviation'], asset_data['max_gain_365d'], 1)
-            p = np.poly1d(z)
-            ax1.plot(asset_data['price_deviation'], p(asset_data['price_deviation']), 
-                    "r--", alpha=0.8, linewidth=2)
-        
-        # Max gain distribution
-        ax2.hist(asset_data['max_gain_365d'], bins=30, alpha=0.7, color='green', edgecolor='black')
-        ax2.axvline(asset_data['max_gain_365d'].mean(), color='red', linestyle='--', linewidth=2,
-                   label=f'Mean: {asset_data["max_gain_365d"].mean():.1f}%')
-        ax2.set_xlabel('365-Day Max Gain (%)')
-        ax2.set_ylabel('Frequency')
-        ax2.set_title(f'{asset}: Max Gain Distribution', fontweight='bold')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # Time series of entry points colored by future performance
-        ax3.scatter(asset_data['entry_date'], asset_data['price_deviation'], 
-                   c=asset_data['max_gain_365d'], cmap='RdYlGn', s=30, alpha=0.7)
-        ax3.set_xlabel('Entry Date')
-        ax3.set_ylabel('Price Deviation (%)')
-        ax3.set_title(f'{asset}: Entry Points Colored by Future Max Gain', fontweight='bold')
-        ax3.grid(True, alpha=0.3)
-        
-        # Success rate by deviation ranges
-        deviation_ranges = pd.cut(asset_data['price_deviation'], bins=10)
-        success_by_range = asset_data.groupby(deviation_ranges)['max_gain_365d'].agg([
-            'mean', 'count', lambda x: (x > 25).mean() * 100
-        ])
-        success_by_range.columns = ['avg_gain', 'count', 'success_rate_25pct']
-        success_by_range = success_by_range[success_by_range['count'] >= 5]  # Filter for significance
-        
-        if len(success_by_range) > 0:
-            x_pos = range(len(success_by_range))
-            bars = ax4.bar(x_pos, success_by_range['success_rate_25pct'], alpha=0.7, color='orange')
-            ax4.set_xticks(x_pos)
-            ax4.set_xticklabels([f'{interval.left:.1f} to {interval.right:.1f}' 
-                               for interval in success_by_range.index], rotation=45)
-            ax4.set_ylabel('Success Rate for 25%+ Gains (%)')
-            ax4.set_xlabel('Deviation Range (%)')
-            ax4.set_title(f'{asset}: Success Rate by Deviation Range', fontweight='bold')
+            # Success rate comparison
+            ax2.scatter(significant_assets['max_gain_365d_mean'], significant_assets['success_rate_25pct'],
+                       s=significant_assets['max_gain_365d_count']/10, alpha=0.7, color='blue')
+            ax2.set_xlabel('Average Max Gain (%)')
+            ax2.set_ylabel('Success Rate for 25%+ Gains (%)')
+            ax2.set_title('Average Gain vs Success Rate (bubble size = sample count)', fontweight='bold')
+            ax2.grid(True, alpha=0.3)
+            
+            # Sample count distribution
+            bars3 = ax3.bar(range(len(significant_assets)), significant_assets['max_gain_365d_count'], 
+                           color='coral', alpha=0.8)
+            ax3.set_xticks(range(len(significant_assets)))
+            ax3.set_xticklabels(significant_assets['asset'], rotation=45, ha='right')
+            ax3.set_ylabel('Sample Count')
+            ax3.set_title('Sample Count by Asset', fontweight='bold')
+            ax3.grid(True, alpha=0.3)
+            
+            # Risk vs Return by asset
+            ax4.scatter(significant_assets['max_gain_365d_std'], significant_assets['max_gain_365d_mean'],
+                       s=significant_assets['max_gain_365d_count']/10, alpha=0.7, color='purple')
+            ax4.set_xlabel('Standard Deviation of Max Gains (%)')
+            ax4.set_ylabel('Average Max Gain (%)')
+            ax4.set_title('Risk vs Return by Asset (bubble size = sample count)', fontweight='bold')
             ax4.grid(True, alpha=0.3)
-            
-            # Add count labels
-            for bar, count in zip(bars, success_by_range['count']):
-                ax4.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 1,
-                        f'n={int(count)}', ha='center', va='bottom', fontsize=8)
         
         plt.tight_layout()
-        plt.savefig(f"{output_dir}/individual_reports/{asset}_performance_report.png", 
-                   dpi=300, bbox_inches='tight')
+        plt.savefig(f"{output_dir}/ASSET_PERFORMANCE_COMPARISON.png", dpi=300, bbox_inches='tight')
         plt.close()
+    
+    print("  ✅ Summary visualizations created")
 
-def save_analysis_results(forward_returns_df, deviation_analysis, zscore_analysis, output_dir):
+def print_comprehensive_summary(summary_dir):
     """
-    Save comprehensive analysis results to CSV files
-    """
-    print("\nSaving analysis results...")
-    
-    # Save main forward returns data
-    forward_returns_df.to_csv(f"{output_dir}/forward_returns_365d_all_data.csv", index=False)
-    print(f"  ✅ Saved main dataset: {len(forward_returns_df):,} records")
-    
-    # Save deviation bin analysis
-    deviation_analysis.to_csv(f"{output_dir}/deviation_bins_analysis.csv", index=False)
-    print(f"  ✅ Saved deviation analysis: {len(deviation_analysis)} bins")
-    
-    # Save Z-score bin analysis
-    if len(zscore_analysis) > 0:
-        zscore_analysis.to_csv(f"{output_dir}/zscore_bins_analysis.csv", index=False)
-        print(f"  ✅ Saved Z-score analysis: {len(zscore_analysis)} bins")
-    
-    # Save asset-specific summaries
-    asset_summary = forward_returns_df.groupby('asset').agg({
-        'max_gain_365d': ['count', 'mean', 'median', 'std'],
-        'final_return_365d': ['mean', 'median'],
-        'days_to_max_gain': 'mean',
-        'volatility_365d': 'mean',
-        'price_deviation': ['mean', 'std'],
-        'z_score': ['mean', 'std']
-    }).round(3)
-    
-    # Flatten column names
-    asset_summary.columns = ['_'.join(col).strip() for col in asset_summary.columns]
-    asset_summary = asset_summary.reset_index()
-    
-    # Add success rate calculations
-    success_rates = forward_returns_df.groupby('asset').apply(
-        lambda x: pd.Series({
-            'success_rate_positive': (x['final_return_365d'] > 0).mean() * 100,
-            'success_rate_25pct': (x['max_gain_365d'] > 25).mean() * 100,
-            'success_rate_50pct': (x['max_gain_365d'] > 50).mean() * 100,
-            'success_rate_100pct': (x['max_gain_365d'] > 100).mean() * 100
-        })
-    ).round(2)
-    
-    asset_summary = asset_summary.merge(success_rates, left_on='asset', right_index=True)
-    asset_summary.to_csv(f"{output_dir}/asset_performance_summary.csv", index=False)
-    print(f"  ✅ Saved asset summary: {len(asset_summary)} assets")
-    
-    # Save detailed bin breakdowns by asset
-    asset_bin_details = []
-    
-    for asset in forward_returns_df['asset'].unique():
-        asset_data = forward_returns_df[forward_returns_df['asset'] == asset]
-        
-        # Deviation bins for this asset
-        for bin_name in asset_data['deviation_bin'].unique():
-            bin_data = asset_data[asset_data['deviation_bin'] == bin_name]
-            if len(bin_data) >= 5:  # Minimum sample size
-                asset_bin_details.append({
-                    'asset': asset,
-                    'bin_type': 'deviation',
-                    'bin_name': bin_name,
-                    'sample_count': len(bin_data),
-                    'avg_max_gain': bin_data['max_gain_365d'].mean(),
-                    'median_max_gain': bin_data['max_gain_365d'].median(),
-                    'std_max_gain': bin_data['max_gain_365d'].std(),
-                    'success_rate_25pct': (bin_data['max_gain_365d'] > 25).mean() * 100,
-                    'avg_days_to_max': bin_data['days_to_max_gain'].mean()
-                })
-        
-        # Z-score bins for this asset (if available)
-        zscore_data = asset_data[asset_data['zscore_bin'] != 'No Z-Score']
-        for bin_name in zscore_data['zscore_bin'].unique():
-            bin_data = zscore_data[zscore_data['zscore_bin'] == bin_name]
-            if len(bin_data) >= 5:
-                asset_bin_details.append({
-                    'asset': asset,
-                    'bin_type': 'zscore',
-                    'bin_name': bin_name,
-                    'sample_count': len(bin_data),
-                    'avg_max_gain': bin_data['max_gain_365d'].mean(),
-                    'median_max_gain': bin_data['max_gain_365d'].median(),
-                    'std_max_gain': bin_data['max_gain_365d'].std(),
-                    'success_rate_25pct': (bin_data['max_gain_365d'] > 25).mean() * 100,
-                    'avg_days_to_max': bin_data['days_to_max_gain'].mean()
-                })
-    
-    if asset_bin_details:
-        asset_bin_df = pd.DataFrame(asset_bin_details)
-        asset_bin_df.to_csv(f"{output_dir}/asset_bin_detailed_analysis.csv", index=False)
-        print(f"  ✅ Saved detailed bin analysis: {len(asset_bin_df)} asset-bin combinations")
-
-def print_comprehensive_summary(forward_returns_df, deviation_analysis, zscore_analysis):
-    """
-    Print comprehensive summary of the analysis
+    Print comprehensive summary of the analysis results
     """
     print("\n" + "="*80)
-    print("365-DAY FORWARD RETURNS ANALYSIS SUMMARY")
+    print("365-DAY FORWARD RETURNS ANALYSIS - COMPREHENSIVE SUMMARY")
     print("="*80)
     
+    # Load summary data
+    combined_file = os.path.join(summary_dir, "ALL_ASSETS_forward_returns_365d.csv")
+    if not os.path.exists(combined_file):
+        print("No combined data found for summary")
+        return
+    
+    combined_df = pd.read_csv(combined_file)
+    
     print(f"\nDATASET OVERVIEW:")
-    print(f"  Total forward return samples: {len(forward_returns_df):,}")
-    print(f"  Unique assets analyzed: {forward_returns_df['asset'].nunique()}")
-    print(f"  Date range: {forward_returns_df['entry_date'].min().strftime('%Y-%m-%d')} to {forward_returns_df['entry_date'].max().strftime('%Y-%m-%d')}")
-    print(f"  Average samples per asset: {len(forward_returns_df) / forward_returns_df['asset'].nunique():.0f}")
+    print(f"  Total forward return samples: {len(combined_df):,}")
+    print(f"  Unique assets analyzed: {combined_df['asset'].nunique()}")
+    print(f"  Average samples per asset: {len(combined_df) / combined_df['asset'].nunique():.0f}")
     
     print(f"\nOVERALL PERFORMANCE METRICS:")
-    print(f"  Average max gain: {forward_returns_df['max_gain_365d'].mean():.2f}%")
-    print(f"  Median max gain: {forward_returns_df['max_gain_365d'].median():.2f}%")
-    print(f"  Success rate (positive final return): {(forward_returns_df['final_return_365d'] > 0).mean()*100:.1f}%")
-    print(f"  Success rate (25%+ max gain): {(forward_returns_df['max_gain_365d'] > 25).mean()*100:.1f}%")
-    print(f"  Success rate (50%+ max gain): {(forward_returns_df['max_gain_365d'] > 50).mean()*100:.1f}%")
-    print(f"  Success rate (100%+ max gain): {(forward_returns_df['max_gain_365d'] > 100).mean()*100:.1f}%")
+    print(f"  Average max gain: {combined_df['max_gain_365d'].mean():.2f}%")
+    print(f"  Median max gain: {combined_df['max_gain_365d'].median():.2f}%")
+    print(f"  Standard deviation: {combined_df['max_gain_365d'].std():.2f}%")
+    print(f"  Average final return: {combined_df['final_return_365d'].mean():.2f}%")
     
-    # Deviation bins analysis
-    if len(deviation_analysis) > 0:
-        print(f"\nDEVIATION BINS ANALYSIS:")
+    print(f"\nSUCCESS RATES:")
+    print(f"  Positive final return: {(combined_df['final_return_365d'] > 0).mean()*100:.1f}%")
+    print(f"  10%+ max gain: {(combined_df['max_gain_365d'] > 10).mean()*100:.1f}%")
+    print(f"  25%+ max gain: {(combined_df['max_gain_365d'] > 25).mean()*100:.1f}%")
+    print(f"  50%+ max gain: {(combined_df['max_gain_365d'] > 50).mean()*100:.1f}%")
+    print(f"  100%+ max gain: {(combined_df['max_gain_365d'] > 100).mean()*100:.1f}%")
+    
+    # Deviation analysis summary
+    deviation_file = os.path.join(summary_dir, "GROUP_deviation_bins_analysis.csv")
+    if os.path.exists(deviation_file):
+        deviation_df = pd.read_csv(deviation_file)
+        print(f"\nTOP DEVIATION BINS BY AVERAGE MAX GAIN:")
         print("-" * 60)
-        print(f"{'Bin':<15} {'Samples':<8} {'Avg Gain':<10} {'25%+ Rate':<10} {'Sharpe':<8}")
+        top_deviation_bins = deviation_df.nlargest(5, 'avg_max_gain')
+        for _, row in top_deviation_bins.iterrows():
+            print(f"  {row['deviation_bin']:<15}: {row['avg_max_gain']:>7.1f}% avg gain ({row['sample_count']:,} samples)")
+    
+    # Absolute deviation analysis summary
+    abs_deviation_file = os.path.join(summary_dir, "GROUP_abs_deviation_bins_analysis.csv")
+    if os.path.exists(abs_deviation_file):
+        abs_deviation_df = pd.read_csv(abs_deviation_file)
+        print(f"\nTOP ABSOLUTE DEVIATION BINS BY AVERAGE MAX GAIN:")
         print("-" * 60)
-        
-        for _, row in deviation_analysis.iterrows():
-            print(f"{row['deviation_bin']:<15} {row['sample_count']:>7,} "
-                  f"{row['avg_max_gain']:>9.1f}% {row['success_rate_25pct']:>9.1f}% "
-                  f"{row['sharpe_ratio']:>7.2f}")
-        
-        # Find best performing bins
-        best_gain_bin = deviation_analysis.loc[deviation_analysis['avg_max_gain'].idxmax()]
-        best_sharpe_bin = deviation_analysis.loc[deviation_analysis['sharpe_ratio'].idxmax()]
-        best_success_bin = deviation_analysis.loc[deviation_analysis['success_rate_25pct'].idxmax()]
-        
-        print(f"\nTOP PERFORMING DEVIATION BINS:")
-        print(f"  Highest avg gain: {best_gain_bin['deviation_bin']} ({best_gain_bin['avg_max_gain']:.1f}%)")
-        print(f"  Best Sharpe ratio: {best_sharpe_bin['deviation_bin']} ({best_sharpe_bin['sharpe_ratio']:.2f})")
-        print(f"  Best success rate: {best_success_bin['deviation_bin']} ({best_success_bin['success_rate_25pct']:.1f}%)")
+        top_abs_bins = abs_deviation_df.nlargest(5, 'avg_max_gain')
+        for _, row in top_abs_bins.iterrows():
+            print(f"  {row['abs_deviation_bin']:<15}: {row['avg_max_gain']:>7.1f}% avg gain ({row['sample_count']:,} samples)")
     
-    # Z-score bins analysis
-    if len(zscore_analysis) > 0:
-        print(f"\nZ-SCORE BINS ANALYSIS:")
+    # Z-score analysis summary
+    zscore_file = os.path.join(summary_dir, "GROUP_zscore_bins_analysis.csv")
+    if os.path.exists(zscore_file):
+        zscore_df = pd.read_csv(zscore_file)
+        print(f"\nTOP Z-SCORE BINS BY AVERAGE MAX GAIN:")
         print("-" * 60)
-        print(f"{'Bin':<15} {'Samples':<8} {'Avg Gain':<10} {'25%+ Rate':<10} {'Sharpe':<8}")
-        print("-" * 60)
-        
-        for _, row in zscore_analysis.iterrows():
-            print(f"{row['zscore_bin']:<15} {row['sample_count']:>7,} "
-                  f"{row['avg_max_gain']:>9.1f}% {row['success_rate_25pct']:>9.1f}% "
-                  f"{row['sharpe_ratio']:>7.2f}")
-        
-        # Find best performing Z-score bins
-        best_zscore_gain = zscore_analysis.loc[zscore_analysis['avg_max_gain'].idxmax()]
-        best_zscore_sharpe = zscore_analysis.loc[zscore_analysis['sharpe_ratio'].idxmax()]
-        
-        print(f"\nTOP PERFORMING Z-SCORE BINS:")
-        print(f"  Highest avg gain: {best_zscore_gain['zscore_bin']} ({best_zscore_gain['avg_max_gain']:.1f}%)")
-        print(f"  Best Sharpe ratio: {best_zscore_sharpe['zscore_bin']} ({best_zscore_sharpe['sharpe_ratio']:.2f})")
+        top_zscore_bins = zscore_df.nlargest(5, 'avg_max_gain')
+        for _, row in top_zscore_bins.iterrows():
+            print(f"  {row['zscore_bin']:<15}: {row['avg_max_gain']:>7.1f}% avg gain ({row['sample_count']:,} samples)")
     
-    # Asset performance ranking
-    asset_performance = forward_returns_df.groupby('asset').agg({
-        'max_gain_365d': ['mean', 'count'],
-        'final_return_365d': 'mean'
-    }).round(2)
-    asset_performance.columns = ['avg_max_gain', 'sample_count', 'avg_final_return']
-    asset_performance = asset_performance[asset_performance['sample_count'] >= 50]  # Filter for significance
-    asset_performance = asset_performance.sort_values('avg_max_gain', ascending=False)
-    
-    print(f"\nTOP 10 ASSETS BY AVERAGE MAX GAIN (min 50 samples):")
-    print("-" * 50)
-    print(f"{'Asset':<8} {'Avg Max Gain':<12} {'Final Return':<12} {'Samples':<8}")
-    print("-" * 50)
-    
-    for asset, row in asset_performance.head(10).iterrows():
-        print(f"{asset:<8} {row['avg_max_gain']:>11.1f}% {row['avg_final_return']:>11.1f}% {row['sample_count']:>7.0f}")
+    # Asset performance summary
+    asset_file = os.path.join(summary_dir, "ASSET_PERFORMANCE_COMPARISON.csv")
+    if os.path.exists(asset_file):
+        asset_df = pd.read_csv(asset_file)
+        significant_assets = asset_df[asset_df['max_gain_365d_count'] >= 100]
+        print(f"\nTOP 10 ASSETS BY AVERAGE MAX GAIN (min 100 samples):")
+        print("-" * 70)
+        print(f"{'Asset':<10} {'Avg Gain':<10} {'Success Rate':<12} {'Samples':<8}")
+        print("-" * 70)
+        top_assets = significant_assets.nlargest(10, 'max_gain_365d_mean')
+        for _, row in top_assets.iterrows():
+            print(f"{row['asset']:<10} {row['max_gain_365d_mean']:>9.1f}% {row['success_rate_25pct']:>11.1f}% {row['max_gain_365d_count']:>7.0f}")
     
     print(f"\nKEY INSIGHTS:")
     print("-" * 40)
     
-    # Analyze undervalued vs overvalued performance
-    undervalued = forward_returns_df[forward_returns_df['price_deviation'] < -10]
-    overvalued = forward_returns_df[forward_returns_df['price_deviation'] > 10]
+    # Mean reversion vs momentum analysis
+    undervalued = combined_df[combined_df['price_deviation'] < -10]
+    overvalued = combined_df[combined_df['price_deviation'] > 10]
     
     if len(undervalued) > 0 and len(overvalued) > 0:
         undervalued_gain = undervalued['max_gain_365d'].mean()
         overvalued_gain = overvalued['max_gain_365d'].mean()
         
-        print(f"  Undervalued assets (>-10%): {undervalued_gain:.1f}% avg max gain")
-        print(f"  Overvalued assets (>+10%): {overvalued_gain:.1f}% avg max gain")
+        print(f"  Undervalued assets (deviation < -10%): {undervalued_gain:.1f}% avg max gain")
+        print(f"  Overvalued assets (deviation > +10%): {overvalued_gain:.1f}% avg max gain")
         print(f"  Undervalued advantage: {undervalued_gain - overvalued_gain:+.1f}%")
         
         if undervalued_gain > overvalued_gain:
-            print(f"  ✅ Mean reversion signal confirmed!")
+            print(f"  ✅ Mean reversion pattern confirmed!")
         else:
-            print(f"  ⚠️  Momentum signal detected!")
+            print(f"  ⚠️  Momentum pattern detected!")
     
     # Time analysis
-    avg_days_to_max = forward_returns_df['days_to_max_gain'].mean()
+    avg_days_to_max = combined_df['days_to_max_gain'].mean()
     print(f"  Average time to maximum gain: {avg_days_to_max:.0f} days")
     
     if avg_days_to_max < 180:
         print(f"  ⚡ Quick gains pattern - consider shorter holding periods")
     else:
-        print(f"  🕐 Patient gains pattern - longer holding periods may be optimal")
-
-def save_individual_asset_results(forward_returns_df, base_v2_dir):
-    """
-    Save individual asset forward returns data into their existing folders
-    """
-    print("\nSaving individual asset results to their folders...")
-    
-    for asset in forward_returns_df['asset'].unique():
-        asset_data = forward_returns_df[forward_returns_df['asset'] == asset]
-        asset_folder = os.path.join(base_v2_dir, asset)
-        
-        if os.path.exists(asset_folder):
-            # Save asset-specific forward returns data
-            asset_forward_file = os.path.join(asset_folder, f"{asset}_forward_returns_365d.csv")
-            asset_data.to_csv(asset_forward_file, index=False)
-            
-            # Create asset-specific bin analysis
-            asset_deviation_analysis = []
-            
-            # Analyze deviation bins for this asset
-            bin_order = [">+50%", "+45% to +50%", "+40% to +45%", "+35% to +40%", "+30% to +35%", 
-                         "+25% to +30%", "+20% to +25%", "+15% to +20%", "+10% to +15%", "+5% to +10%", 
-                         "-5% to +5%", "-10% to -5%", "-15% to -10%", "-20% to -15%", "-25% to -20%", 
-                         "-30% to -25%", "-35% to -30%", "-40% to -35%", "-45% to -40%", "-50% to -45%", "<-50%"]
-            
-            for bin_name in bin_order:
-                bin_data = asset_data[asset_data['deviation_bin'] == bin_name]
-                
-                if len(bin_data) >= 3:  # Minimum samples for asset-specific analysis
-                    max_gains = bin_data['max_gain_365d']
-                    final_returns = bin_data['final_return_365d']
-                    
-                    asset_deviation_analysis.append({
-                        'deviation_bin': bin_name,
-                        'sample_count': len(bin_data),
-                        'avg_max_gain': max_gains.mean(),
-                        'median_max_gain': max_gains.median(),
-                        'std_max_gain': max_gains.std(),
-                        'avg_final_return': final_returns.mean(),
-                        'success_rate_positive': (final_returns > 0).mean() * 100,
-                        'success_rate_25pct': (max_gains > 25).mean() * 100,
-                        'success_rate_50pct': (max_gains > 50).mean() * 100,
-                        'avg_days_to_max': bin_data['days_to_max_gain'].mean(),
-                        'avg_max_loss': bin_data['max_loss_365d'].mean()
-                    })
-            
-            if asset_deviation_analysis:
-                asset_bin_file = os.path.join(asset_folder, f"{asset}_forward_returns_by_bins.csv")
-                pd.DataFrame(asset_deviation_analysis).to_csv(asset_bin_file, index=False)
-            
-            # Create asset-specific summary stats
-            asset_summary = {
-                'asset': asset,
-                'total_samples': len(asset_data),
-                'date_range_start': asset_data['entry_date'].min(),
-                'date_range_end': asset_data['entry_date'].max(),
-                'overall_avg_max_gain': asset_data['max_gain_365d'].mean(),
-                'overall_median_max_gain': asset_data['max_gain_365d'].median(),
-                'overall_std_max_gain': asset_data['max_gain_365d'].std(),
-                'overall_avg_final_return': asset_data['final_return_365d'].mean(),
-                'overall_success_rate_positive': (asset_data['final_return_365d'] > 0).mean() * 100,
-                'overall_success_rate_25pct': (asset_data['max_gain_365d'] > 25).mean() * 100,
-                'overall_success_rate_50pct': (asset_data['max_gain_365d'] > 50).mean() * 100,
-                'overall_success_rate_100pct': (asset_data['max_gain_365d'] > 100).mean() * 100,
-                'best_deviation_bin': '',
-                'best_bin_avg_gain': 0
-            }
-            
-            # Find best performing bin for this asset
-            if asset_deviation_analysis:
-                best_bin = max(asset_deviation_analysis, key=lambda x: x['avg_max_gain'])
-                asset_summary['best_deviation_bin'] = best_bin['deviation_bin']
-                asset_summary['best_bin_avg_gain'] = best_bin['avg_max_gain']
-            
-            asset_summary_file = os.path.join(asset_folder, f"{asset}_forward_returns_summary.csv")
-            pd.DataFrame([asset_summary]).to_csv(asset_summary_file, index=False)
-            
-            print(f"  ✅ {asset}: {len(asset_data)} samples saved to individual folder")
-        else:
-            print(f"  ⚠️  {asset}: folder not found, skipping individual save")
-
-def save_analysis_results(forward_returns_df, deviation_analysis, zscore_analysis, output_dir, base_v2_dir):
-    """
-    Save comprehensive analysis results - group data in summary folder, individual data in asset folders
-    """
-    print("\nSaving analysis results...")
-    
-    # Save individual asset results to their own folders
-    save_individual_asset_results(forward_returns_df, base_v2_dir)
-    
-    # Save group/summary analysis in the summary folder
-    print(f"\nSaving group analysis to summary folder...")
-    
-    # Save main forward returns data (all combined)
-    forward_returns_df.to_csv(f"{output_dir}/ALL_ASSETS_forward_returns_365d.csv", index=False)
-    print(f"  ✅ Saved combined dataset: {len(forward_returns_df):,} records")
-    
-    # Save deviation bin analysis (group summary)
-    deviation_analysis.to_csv(f"{output_dir}/GROUP_deviation_bins_analysis.csv", index=False)
-    print(f"  ✅ Saved group deviation analysis: {len(deviation_analysis)} bins")
-    
-    # Save Z-score bin analysis (group summary)
-    if len(zscore_analysis) > 0:
-        zscore_analysis.to_csv(f"{output_dir}/GROUP_zscore_bins_analysis.csv", index=False)
-        print(f"  ✅ Saved group Z-score analysis: {len(zscore_analysis)} bins")
-    
-    # Save cross-asset performance comparison
-    asset_summary = forward_returns_df.groupby('asset').agg({
-        'max_gain_365d': ['count', 'mean', 'median', 'std'],
-        'final_return_365d': ['mean', 'median'],
-        'days_to_max_gain': 'mean',
-        'volatility_365d': 'mean',
-        'price_deviation': ['mean', 'std'],
-        'z_score': ['mean', 'std']
-    }).round(3)
-    
-    # Flatten column names
-    asset_summary.columns = ['_'.join(col).strip() for col in asset_summary.columns]
-    asset_summary = asset_summary.reset_index()
-    
-    # Add success rate calculations
-    success_rates = forward_returns_df.groupby('asset').apply(
-        lambda x: pd.Series({
-            'success_rate_positive': (x['final_return_365d'] > 0).mean() * 100,
-            'success_rate_25pct': (x['max_gain_365d'] > 25).mean() * 100,
-            'success_rate_50pct': (x['max_gain_365d'] > 50).mean() * 100,
-            'success_rate_100pct': (x['max_gain_365d'] > 100).mean() * 100
-        })
-    ).round(2)
-    
-    asset_summary = asset_summary.merge(success_rates, left_on='asset', right_index=True)
-    asset_summary.to_csv(f"{output_dir}/CROSS_ASSET_performance_comparison.csv", index=False)
-    print(f"  ✅ Saved cross-asset comparison: {len(asset_summary)} assets")
-
-def create_individual_asset_reports(forward_returns_df, base_v2_dir):
-    """
-    Create individual performance reports and save them to each asset's folder
-    """
-    print("  Creating individual asset reports in their folders...")
-    
-    # Get top 10 assets by sample count for detailed reports
-    asset_counts = forward_returns_df['asset'].value_counts()
-    top_assets = asset_counts.head(10).index.tolist()
-    
-    for asset in top_assets:
-        asset_data = forward_returns_df[forward_returns_df['asset'] == asset]
-        asset_folder = os.path.join(base_v2_dir, asset)
-        
-        if not os.path.exists(asset_folder):
-            continue
-            
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
-        
-        # Deviation vs Max Gain scatter
-        ax1.scatter(asset_data['price_deviation'], asset_data['max_gain_365d'], 
-                   alpha=0.6, s=20, color='blue')
-        ax1.set_xlabel('Price Deviation (%)')
-        ax1.set_ylabel('365-Day Max Gain (%)')
-        ax1.set_title(f'{asset}: Deviation vs Max Gain', fontweight='bold')
-        ax1.grid(True, alpha=0.3)
-        
-        # Add trend line
-        if len(asset_data) > 10:
-            z = np.polyfit(asset_data['price_deviation'], asset_data['max_gain_365d'], 1)
-            p = np.poly1d(z)
-            ax1.plot(asset_data['price_deviation'], p(asset_data['price_deviation']), 
-                    "r--", alpha=0.8, linewidth=2)
-        
-        # Max gain distribution
-        ax2.hist(asset_data['max_gain_365d'], bins=30, alpha=0.7, color='green', edgecolor='black')
-        ax2.axvline(asset_data['max_gain_365d'].mean(), color='red', linestyle='--', linewidth=2,
-                   label=f'Mean: {asset_data["max_gain_365d"].mean():.1f}%')
-        ax2.set_xlabel('365-Day Max Gain (%)')
-        ax2.set_ylabel('Frequency')
-        ax2.set_title(f'{asset}: Max Gain Distribution', fontweight='bold')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # Time series of entry points colored by future performance
-        ax3.scatter(asset_data['entry_date'], asset_data['price_deviation'], 
-                   c=asset_data['max_gain_365d'], cmap='RdYlGn', s=30, alpha=0.7)
-        ax3.set_xlabel('Entry Date')
-        ax3.set_ylabel('Price Deviation (%)')
-        ax3.set_title(f'{asset}: Entry Points Colored by Future Max Gain', fontweight='bold')
-        ax3.grid(True, alpha=0.3)
-        
-        # Success rate by deviation ranges
-        deviation_ranges = pd.cut(asset_data['price_deviation'], bins=10)
-        success_by_range = asset_data.groupby(deviation_ranges)['max_gain_365d'].agg([
-            'mean', 'count', lambda x: (x > 25).mean() * 100
-        ])
-        success_by_range.columns = ['avg_gain', 'count', 'success_rate_25pct']
-        success_by_range = success_by_range[success_by_range['count'] >= 5]  # Filter for significance
-        
-        if len(success_by_range) > 0:
-            x_pos = range(len(success_by_range))
-            bars = ax4.bar(x_pos, success_by_range['success_rate_25pct'], alpha=0.7, color='orange')
-            ax4.set_xticks(x_pos)
-            ax4.set_xticklabels([f'{interval.left:.1f} to {interval.right:.1f}' 
-                               for interval in success_by_range.index], rotation=45)
-            ax4.set_ylabel('Success Rate for 25%+ Gains (%)')
-            ax4.set_xlabel('Deviation Range (%)')
-            ax4.set_title(f'{asset}: Success Rate by Deviation Range', fontweight='bold')
-            ax4.grid(True, alpha=0.3)
-            
-            # Add count labels
-            for bar, count in zip(bars, success_by_range['count']):
-                ax4.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 1,
-                        f'n={int(count)}', ha='center', va='bottom', fontsize=8)
-        
-        plt.tight_layout()
-        plt.savefig(f"{asset_folder}/{asset}_forward_returns_analysis.png", 
-                   dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print(f"    ✅ {asset}: Individual report saved to {asset_folder}/")
+        print(f"  🕐 Patient gains pattern - longer holding periods optimal")
 
 def main():
     print("IWLS Forward Returns Analysis - 365 Day Maximum Gains")
     print("=" * 70)
     print("Analyzing future returns based on IWLS deviation and Z-score bins")
-    print("Includes: Individual asset files + group summary analysis")
+    print("Features:")
+    print("  • 5% deviation bins (signed)")
+    print("  • 5% absolute deviation magnitude bins")  
+    print("  • Z-score standard deviation bins")
+    print("  • Individual asset files saved to existing folders")
+    print("  • Group summary analysis in FORWARD_RETURNS_SUMMARY folder")
     
-    # Use existing V2 structure to keep things clean
-    base_v2_dir = "/Users/tim/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
+    # Check for V2 directory
+    v2_dir = "/Users/tim/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
     
-    if not os.path.exists(base_v2_dir):
+    if not os.path.exists(v2_dir):
         print("❌ IWLS_ANALYSIS_V2 directory not found. Run the IWLS V2 analysis first.")
         return
     
-    # Create forward returns summary folder for group analysis
-    output_dir = os.path.join(base_v2_dir, "FORWARD_RETURNS_SUMMARY")
-    os.makedirs(output_dir, exist_ok=True)
+    print(f"\nUsing base directory: {v2_dir}")
     
-    print(f"\nBase directory: {base_v2_dir}")
-    print(f"Group summary directory: {output_dir}")
-    print("✅ Individual files will go into each asset's existing folder")
-    print("✅ Group analysis will go into FORWARD_RETURNS_SUMMARY folder")
+    # Get list of asset directories
+    asset_dirs = [d for d in os.listdir(v2_dir) 
+                  if os.path.isdir(os.path.join(v2_dir, d)) and d != "FORWARD_RETURNS_SUMMARY"]
     
-    # Load IWLS results
-    all_results = load_iwls_results()
-    if not all_results:
-        return
+    print(f"Found {len(asset_dirs)} asset directories to process")
     
-    # Calculate forward returns for all assets
-    forward_returns_df = analyze_all_assets_forward_returns(all_results)
+    # Process each asset
+    successful_assets = 0
+    failed_assets = 0
     
-    if len(forward_returns_df) == 0:
-        print("❌ No forward returns data generated!")
-        return
+    for i, asset_name in enumerate(asset_dirs):
+        print(f"\n[{i+1}/{len(asset_dirs)}] Processing {asset_name}...")
+        
+        success = process_single_asset(asset_name, v2_dir)
+        if success:
+            successful_assets += 1
+        else:
+            failed_assets += 1
     
-    # Analyze by deviation bins
-    deviation_analysis = analyze_returns_by_deviation_bins(forward_returns_df)
+    print(f"\n" + "="*50)
+    print(f"INDIVIDUAL ASSET PROCESSING COMPLETE")
+    print(f"Successful: {successful_assets}")
+    print(f"Failed: {failed_assets}")
+    print(f"Success rate: {successful_assets/(successful_assets+failed_assets)*100:.1f}%")
     
-    # Analyze by Z-score bins
-    zscore_analysis = analyze_returns_by_zscore_bins(forward_returns_df)
-    
-    # Create comprehensive visualizations
-    create_comprehensive_visualizations(forward_returns_df, deviation_analysis, 
-                                      zscore_analysis, output_dir)
-    
-    # Create individual asset reports (saved to their own folders)
-    create_individual_asset_reports(forward_returns_df, base_v2_dir)
-    
-    # Save all results (individual to asset folders, group to summary folder)
-    save_analysis_results(forward_returns_df, deviation_analysis, zscore_analysis, output_dir, base_v2_dir)
+    # Create cross-asset summary analysis
+    summary_dir = create_summary_analysis(v2_dir)
     
     # Print comprehensive summary
-    print_comprehensive_summary(forward_returns_df, deviation_analysis, zscore_analysis)
+    print_comprehensive_summary(summary_dir)
     
     print(f"\n" + "="*70)
     print("FORWARD RETURNS ANALYSIS COMPLETE")
     print("="*70)
-    print(f"Results saved to: {output_dir}")
-    print("\nFiles created:")
-    print("  📄 forward_returns_365d_all_data.csv (complete dataset)")
-    print("  📄 deviation_bins_analysis.csv (5% deviation bins summary)")
-    print("  📄 zscore_bins_analysis.csv (Z-score bins summary)")
-    print("  📄 asset_performance_summary.csv (per-asset metrics)")
-    print("  📄 asset_bin_detailed_analysis.csv (asset-bin combinations)")
-    print("  📊 deviation_bins_comprehensive_analysis.png (6-panel deviation analysis)")
-    print("  📊 zscore_bins_comprehensive_analysis.png (6-panel Z-score analysis)")
-    print("  📊 asset_performance_heatmaps.png (cross-asset performance)")
-    print("  📁 individual_reports/ (detailed reports for top 10 assets)")
+    print(f"Individual results saved to: [ASSET_NAME]/ folders")
+    print(f"Group summary saved to: {summary_dir}")
+    print("\nFiles created per asset:")
+    print("  📄 [ASSET]_forward_returns_365d.csv (raw forward return data)")
+    print("  📄 [ASSET]_deviation_bins_forward_analysis.csv (signed deviation bins)")
+    print("  📄 [ASSET]_abs_deviation_bins_forward_analysis.csv (absolute magnitude bins)")
+    print("  📄 [ASSET]_zscore_bins_forward_analysis.csv (Z-score bins)")
+    print("  📊 [ASSET]_forward_returns_analysis.png (visualizations)")
     
-    print(f"\n🎯 Ready for strategy development:")
-    print(f"   • Use deviation_bins_analysis.csv for entry signal optimization")
-    print(f"   • Use zscore_bins_analysis.csv for normalized comparisons")
-    print(f"   • Use asset_performance_summary.csv for asset selection")
-    print(f"   • Review individual reports for asset-specific insights")
+    print("\nGroup summary files:")
+    print("  📄 ALL_ASSETS_forward_returns_365d.csv (combined raw data)")
+    print("  📄 GROUP_deviation_bins_analysis.csv (group deviation analysis)")
+    print("  📄 GROUP_abs_deviation_bins_analysis.csv (group absolute deviation analysis)")
+    print("  📄 GROUP_zscore_bins_analysis.csv (group Z-score analysis)")
+    print("  📄 ASSET_PERFORMANCE_COMPARISON.csv (cross-asset comparison)")
+    print("  📊 GROUP_deviation_bins_analysis.png (group deviation visualizations)")
+    print("  📊 GROUP_abs_deviation_bins_analysis.png (group absolute deviation visualizations)")
+    print("  📊 GROUP_zscore_bins_analysis.png (group Z-score visualizations)")
+    print("  📊 ASSET_PERFORMANCE_COMPARISON.png (asset comparison visualizations)")
+    
+    print(f"\n🎯 Analysis complete! Use the bin analysis files to:")
+    print(f"   • Identify optimal entry signals based on deviation levels")
+    print(f"   • Compare signed vs absolute deviation patterns")
+    print(f"   • Analyze normalized Z-score performance")
+    print(f"   • Select best performing assets and deviation ranges")
 
 if __name__ == "__main__":
     main()
