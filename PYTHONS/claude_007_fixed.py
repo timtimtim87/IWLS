@@ -952,7 +952,7 @@ def main():
     print("Fix: Corrected benchmark calculation to use same start date as strategy")
     
     # Setup directories
-    v2_dir = "/Users/tim/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
+    v2_dir = "/Users/tim/CODE_PROJECTS/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
     
     if not os.path.exists(v2_dir):
         print("❌ IWLS_ANALYSIS_V2 directory not found.")
