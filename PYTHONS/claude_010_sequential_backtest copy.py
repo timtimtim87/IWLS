@@ -108,7 +108,7 @@ def select_underperforming_stocks(available_df, min_deviation=-15, num_stocks=10
     
     return selected_stocks
 
-def find_suitable_options(selected_stocks, entry_date, options_base_dir, min_dte=500, max_dte=700):
+def find_suitable_options(selected_stocks, entry_date, options_base_dir, min_dte=300, max_dte=400):
     """
     Find suitable call options for selected stocks from actual options data
     """
@@ -279,16 +279,24 @@ def calculate_basket_value_on_date(option_contracts, check_date):
     return total_value, individual_values
 
 def run_sequential_trading_strategy(all_iwls_data, options_base_dir, start_date, end_date, 
-                                  initial_capital=100000, profit_target=50, position_size=0.5):
+                                  initial_capital=100000, position_size=0.5, 
+                                  profit_target=None, stop_loss=None, max_hold_days=None):
     """
-    Run sequential trading strategy with profit targets and reinvestment
+    Run sequential trading strategy with configurable exit criteria
+    
+    Parameters:
+    - profit_target: Float (e.g., 50.0 for 50%) or None to disable
+    - stop_loss: Float (e.g., -25.0 for -25%) or None to disable  
+    - max_hold_days: Int (e.g., 180) or None to disable
     """
     print(f"\nRunning sequential trading strategy:")
     print(f"  Start date: {start_date.strftime('%Y-%m-%d')}")
     print(f"  End date: {end_date.strftime('%Y-%m-%d')}")
     print(f"  Initial capital: ${initial_capital:,}")
-    print(f"  Profit target: {profit_target}%")
     print(f"  Position size: {position_size*100}% of account")
+    print(f"  Profit target: {'DISABLED' if profit_target is None else f'{profit_target}%'}")
+    print(f"  Stop loss: {'DISABLED' if stop_loss is None else f'{stop_loss}%'}")
+    print(f"  Max hold days: {'DISABLED' if max_hold_days is None else f'{max_hold_days} days'}")
     
     # Initialize account
     current_capital = initial_capital
@@ -319,28 +327,41 @@ def run_sequential_trading_strategy(all_iwls_data, options_base_dir, start_date,
             initial_position_value = active_positions['initial_position_value'].iloc[0]
             position_return = ((position_value / initial_position_value) - 1) * 100
             
-            # Check days held for max hold limit
+            # Check days held
             entry_date = active_positions['entry_date'].iloc[0]
             days_held = (current_date - entry_date).days
             
-            # Only force close for max hold time (6 months) or expiration
-            should_force_close = False
-            force_reason = ""
+            # Check exit conditions
+            should_exit = False
+            exit_reason = ""
             
-            # Force close if held too long (6 months)
-            if days_held > 300:
-                should_force_close = True
-                force_reason = "max_hold_time"
+            # Check profit target
+            if profit_target is not None and position_return >= profit_target:
+                should_exit = True
+                exit_reason = f'profit_target_{profit_target}%'
             
-            # Check if profit target is hit or force close
-            if position_return >= profit_target or should_force_close:
+            # Check stop loss
+            elif stop_loss is not None and position_return <= stop_loss:
+                should_exit = True
+                exit_reason = f'stop_loss_{stop_loss}%'
+            
+            # Check max hold time
+            elif max_hold_days is not None and days_held >= max_hold_days:
+                should_exit = True
+                exit_reason = f'max_hold_{max_hold_days}_days'
+            
+            # If no exit criteria are set, hold until expiration (emergency exit after 400 days)
+            elif profit_target is None and stop_loss is None and max_hold_days is None:
+                if days_held >= 400:  # Emergency exit to prevent infinite holding
+                    should_exit = True
+                    exit_reason = "emergency_exit_400_days"
+            
+            if should_exit:
                 # Close position and realize profits/losses
                 profit = position_value - initial_position_value
                 current_capital += position_value
                 
                 # Record the trade
-                exit_reason = f'profit_target_{profit_target}%' if position_return >= profit_target else force_reason
-                
                 trade_record = {
                     'trade_id': trade_id,
                     'entry_date': entry_date,
@@ -395,7 +416,7 @@ def run_sequential_trading_strategy(all_iwls_data, options_base_dir, start_date,
                         )
                         
                         if len(option_contracts) > 0:
-                            # Calculate position size (50% of current capital)
+                            # Calculate position size
                             position_capital = current_capital * position_size
                             
                             # Calculate how many contracts to buy for each option
@@ -455,14 +476,20 @@ def run_sequential_trading_strategy(all_iwls_data, options_base_dir, start_date,
     
     return pd.DataFrame(daily_account_values), pd.DataFrame(all_trades), current_capital
 
-def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, final_capital, output_dir):
+def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, final_capital, 
+                                   strategy_params, output_dir):
     """
-    Create comprehensive plots for the sequential strategy
+    Create comprehensive plots for the sequential strategy with parameter info
     """
     print("\nCreating sequential strategy performance plots...")
     
+    # Create parameter string for titles
+    param_str = f"PT: {strategy_params.get('profit_target', 'OFF')}%, " \
+                f"SL: {strategy_params.get('stop_loss', 'OFF')}%, " \
+                f"Max: {strategy_params.get('max_hold_days', 'OFF')} days"
+    
     # Figure 1: Account performance over time
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(18, 12))
     
     # Plot 1: Account value over time
     ax1.plot(daily_values['date'], daily_values['account_value'], linewidth=2, color='blue', label='Total Account')
@@ -472,7 +499,7 @@ def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, f
     ax1.axhline(y=initial_capital, color='black', linestyle='--', alpha=0.5, label=f'Initial: ${initial_capital:,}')
     ax1.set_xlabel('Date')
     ax1.set_ylabel('Value ($)')
-    ax1.set_title('Account Value Over Time', fontweight='bold')
+    ax1.set_title(f'Account Value Over Time ({param_str})', fontweight='bold')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
     ax1.tick_params(axis='x', rotation=45)
@@ -482,7 +509,7 @@ def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, f
     ax2.axhline(y=0, color='red', linestyle='--', alpha=0.5, label='Break Even')
     ax2.set_xlabel('Date')
     ax2.set_ylabel('Total Return (%)')
-    ax2.set_title('Cumulative Return Percentage', fontweight='bold')
+    ax2.set_title(f'Cumulative Return Percentage ({param_str})', fontweight='bold')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
     ax2.tick_params(axis='x', rotation=45)
@@ -492,11 +519,20 @@ def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, f
         colors = ['green' if x >= 0 else 'red' for x in trades_df['return_pct']]
         bars = ax3.bar(range(len(trades_df)), trades_df['return_pct'], color=colors, alpha=0.7)
         ax3.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        ax3.axhline(y=50, color='blue', linestyle='--', alpha=0.5, label='50% Target')
+        
+        # Add target and stop loss lines if they exist
+        if strategy_params.get('profit_target') is not None:
+            ax3.axhline(y=strategy_params['profit_target'], color='blue', linestyle='--', alpha=0.7, 
+                       label=f"PT: {strategy_params['profit_target']}%")
+        if strategy_params.get('stop_loss') is not None:
+            ax3.axhline(y=strategy_params['stop_loss'], color='orange', linestyle='--', alpha=0.7, 
+                       label=f"SL: {strategy_params['stop_loss']}%")
+        
         ax3.set_xlabel('Trade Number')
         ax3.set_ylabel('Trade Return (%)')
         ax3.set_title('Individual Trade Returns', fontweight='bold')
-        ax3.legend()
+        if strategy_params.get('profit_target') is not None or strategy_params.get('stop_loss') is not None:
+            ax3.legend()
         ax3.grid(True, alpha=0.3)
         
         # Add value labels on bars
@@ -510,11 +546,23 @@ def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, f
         colors = ['green' if x >= 0 else 'red' for x in trades_df['return_pct']]
         scatter = ax4.scatter(trades_df['days_held'], trades_df['return_pct'], c=colors, alpha=0.7, s=60)
         ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-        ax4.axhline(y=50, color='blue', linestyle='--', alpha=0.5, label='50% Target')
+        
+        # Add target, stop loss, and max hold lines
+        if strategy_params.get('profit_target') is not None:
+            ax4.axhline(y=strategy_params['profit_target'], color='blue', linestyle='--', alpha=0.7, 
+                       label=f"PT: {strategy_params['profit_target']}%")
+        if strategy_params.get('stop_loss') is not None:
+            ax4.axhline(y=strategy_params['stop_loss'], color='orange', linestyle='--', alpha=0.7, 
+                       label=f"SL: {strategy_params['stop_loss']}%")
+        if strategy_params.get('max_hold_days') is not None:
+            ax4.axvline(x=strategy_params['max_hold_days'], color='purple', linestyle='--', alpha=0.7, 
+                       label=f"Max: {strategy_params['max_hold_days']}d")
+        
         ax4.set_xlabel('Days Held')
         ax4.set_ylabel('Trade Return (%)')
         ax4.set_title('Trade Duration vs Return', fontweight='bold')
-        ax4.legend()
+        if any(strategy_params.get(k) is not None for k in ['profit_target', 'stop_loss', 'max_hold_days']):
+            ax4.legend()
         ax4.grid(True, alpha=0.3)
         
         # Add trade numbers as labels
@@ -528,9 +576,10 @@ def create_sequential_strategy_plots(daily_values, trades_df, initial_capital, f
     
     print("  ✅ Performance plots created")
 
-def save_sequential_results(daily_values, trades_df, initial_capital, final_capital, output_dir):
+def save_sequential_results(daily_values, trades_df, initial_capital, final_capital, 
+                          strategy_params, output_dir):
     """
-    Save all sequential strategy results
+    Save all sequential strategy results including strategy parameters
     """
     print("\nSaving sequential strategy results...")
     
@@ -552,12 +601,18 @@ def save_sequential_results(daily_values, trades_df, initial_capital, final_capi
         avg_winning_trade = trades_df[trades_df['return_pct'] > 0]['return_pct'].mean() if winning_trades > 0 else 0
         avg_losing_trade = trades_df[trades_df['return_pct'] <= 0]['return_pct'].mean() if losing_trades > 0 else 0
         avg_hold_time = trades_df['days_held'].mean()
-        target_hit_rate = (trades_df['exit_reason'] == f'profit_target_50%').mean() * 100
+        
+        # Calculate exit reason statistics
+        exit_reasons = trades_df['exit_reason'].value_counts()
         
         summary_stats = {
             'initial_capital': initial_capital,
             'final_capital': final_capital,
             'total_return_pct': total_return,
+            'profit_target': strategy_params.get('profit_target'),
+            'stop_loss': strategy_params.get('stop_loss'),
+            'max_hold_days': strategy_params.get('max_hold_days'),
+            'position_size': strategy_params.get('position_size'),
             'total_trades': len(trades_df),
             'winning_trades': winning_trades,
             'losing_trades': losing_trades,
@@ -566,30 +621,172 @@ def save_sequential_results(daily_values, trades_df, initial_capital, final_capi
             'avg_winning_trade_pct': avg_winning_trade,
             'avg_losing_trade_pct': avg_losing_trade,
             'avg_hold_time_days': avg_hold_time,
-            'target_hit_rate_pct': target_hit_rate,
             'best_trade_pct': trades_df['return_pct'].max(),
             'worst_trade_pct': trades_df['return_pct'].min(),
             'total_profit_loss': final_capital - initial_capital
         }
         
+        # Add exit reason counts to summary
+        for reason, count in exit_reasons.items():
+            summary_stats[f'exits_{reason}'] = count
+            summary_stats[f'exits_{reason}_pct'] = (count / len(trades_df)) * 100
+        
         summary_df = pd.DataFrame([summary_stats])
         summary_df.to_csv(f"{output_dir}/strategy_summary.csv", index=False)
         print(f"  ✅ Summary stats: strategy_summary.csv")
+        
+        # Save exit reasons breakdown
+        exit_reasons_df = exit_reasons.reset_index()
+        exit_reasons_df.columns = ['exit_reason', 'count']
+        exit_reasons_df['percentage'] = (exit_reasons_df['count'] / len(trades_df)) * 100
+        exit_reasons_df.to_csv(f"{output_dir}/exit_reasons_breakdown.csv", index=False)
+        print(f"  ✅ Exit reasons: exit_reasons_breakdown.csv")
+
+def run_strategy_comparison(all_iwls_data, options_base_dir, start_date, end_date, 
+                           initial_capital, position_size, strategy_configs, base_output_dir):
+    """
+    Run multiple strategy configurations and compare results
+    """
+    print(f"\n" + "="*80)
+    print("RUNNING STRATEGY COMPARISON")
+    print("="*80)
+    
+    comparison_results = []
+    
+    for i, config in enumerate(strategy_configs):
+        print(f"\n[Configuration {i+1}/{len(strategy_configs)}]")
+        print(f"Profit Target: {config.get('profit_target', 'DISABLED')}")
+        print(f"Stop Loss: {config.get('stop_loss', 'DISABLED')}")
+        print(f"Max Hold Days: {config.get('max_hold_days', 'DISABLED')}")
+        
+        # Create output directory for this configuration
+        config_name = f"PT{config.get('profit_target', 'OFF')}_SL{config.get('stop_loss', 'OFF')}_MH{config.get('max_hold_days', 'OFF')}"
+        config_output_dir = os.path.join(base_output_dir, config_name)
+        os.makedirs(config_output_dir, exist_ok=True)
+        
+        try:
+            # Run strategy with this configuration
+            daily_values, trades_df, final_capital = run_sequential_trading_strategy(
+                all_iwls_data, options_base_dir, start_date, end_date,
+                initial_capital=initial_capital, position_size=position_size,
+                profit_target=config.get('profit_target'),
+                stop_loss=config.get('stop_loss'),
+                max_hold_days=config.get('max_hold_days')
+            )
+            
+            # Calculate performance metrics
+            total_return = ((final_capital / initial_capital) - 1) * 100
+            
+            # Create plots
+            create_sequential_strategy_plots(daily_values, trades_df, initial_capital, 
+                                           final_capital, config, config_output_dir)
+            
+            # Save results
+            save_sequential_results(daily_values, trades_df, initial_capital, 
+                                  final_capital, config, config_output_dir)
+            
+            # Collect summary for comparison
+            if len(trades_df) > 0:
+                winning_trades = len(trades_df[trades_df['return_pct'] > 0])
+                win_rate = (winning_trades / len(trades_df)) * 100
+                avg_trade_return = trades_df['return_pct'].mean()
+                avg_hold_time = trades_df['days_held'].mean()
+                
+                # Count exit reasons
+                exit_reasons = trades_df['exit_reason'].value_counts()
+                profit_exits = exit_reasons.get(f"profit_target_{config.get('profit_target')}%", 0) if config.get('profit_target') else 0
+                stop_exits = exit_reasons.get(f"stop_loss_{config.get('stop_loss')}%", 0) if config.get('stop_loss') else 0
+                max_hold_exits = exit_reasons.get(f"max_hold_{config.get('max_hold_days')}_days", 0) if config.get('max_hold_days') else 0
+                
+                comparison_results.append({
+                    'config_name': config_name,
+                    'profit_target': config.get('profit_target'),
+                    'stop_loss': config.get('stop_loss'),
+                    'max_hold_days': config.get('max_hold_days'),
+                    'total_return_pct': total_return,
+                    'final_capital': final_capital,
+                    'total_trades': len(trades_df),
+                    'win_rate_pct': win_rate,
+                    'avg_trade_return_pct': avg_trade_return,
+                    'avg_hold_time_days': avg_hold_time,
+                    'best_trade_pct': trades_df['return_pct'].max(),
+                    'worst_trade_pct': trades_df['return_pct'].min(),
+                    'profit_target_exits': profit_exits,
+                    'stop_loss_exits': stop_exits,
+                    'max_hold_exits': max_hold_exits,
+                    'profit_target_hit_rate': (profit_exits / len(trades_df)) * 100 if len(trades_df) > 0 else 0,
+                    'stop_loss_hit_rate': (stop_exits / len(trades_df)) * 100 if len(trades_df) > 0 else 0
+                })
+            
+            print(f"✅ Configuration completed: {total_return:+.2f}% return, {len(trades_df)} trades")
+            
+        except Exception as e:
+            print(f"❌ Configuration failed: {e}")
+            comparison_results.append({
+                'config_name': config_name,
+                'profit_target': config.get('profit_target'),
+                'stop_loss': config.get('stop_loss'),
+                'max_hold_days': config.get('max_hold_days'),
+                'total_return_pct': np.nan,
+                'error': str(e)
+            })
+    
+    # Save comparison results
+    if comparison_results:
+        comparison_df = pd.DataFrame(comparison_results)
+        comparison_df.to_csv(f"{base_output_dir}/strategy_comparison.csv", index=False)
+        print(f"\n✅ Comparison results saved to: {base_output_dir}/strategy_comparison.csv")
+        
+        # Print comparison summary
+        print(f"\n" + "="*80)
+        print("STRATEGY COMPARISON SUMMARY")
+        print("="*80)
+        
+        valid_results = comparison_df.dropna(subset=['total_return_pct'])
+        if len(valid_results) > 0:
+            # Sort by total return
+            sorted_results = valid_results.sort_values('total_return_pct', ascending=False)
+            
+            print(f"\nRANKING BY TOTAL RETURN:")
+            print("-" * 120)
+            print(f"{'Rank':<4} {'Config':<20} {'PT':<6} {'SL':<6} {'MaxH':<6} {'Return':<8} {'Trades':<7} {'WinRate':<8} {'AvgTrade':<9} {'AvgHold':<8}")
+            print("-" * 120)
+            
+            for i, (_, row) in enumerate(sorted_results.iterrows()):
+                pt = f"{row['profit_target']}%" if pd.notna(row['profit_target']) else "OFF"
+                sl = f"{row['stop_loss']}%" if pd.notna(row['stop_loss']) else "OFF"
+                mh = f"{row['max_hold_days']}d" if pd.notna(row['max_hold_days']) else "OFF"
+                
+                print(f"{i+1:<4} {row['config_name']:<20} {pt:<6} {sl:<6} {mh:<6} "
+                      f"{row['total_return_pct']:>7.2f}% {row['total_trades']:<7.0f} "
+                      f"{row['win_rate_pct']:>7.1f}% {row['avg_trade_return_pct']:>8.2f}% {row['avg_hold_time_days']:>7.1f}")
+            
+            # Best strategy details
+            best_strategy = sorted_results.iloc[0]
+            print(f"\n🏆 BEST STRATEGY: {best_strategy['config_name']}")
+            print(f"   Total Return: {best_strategy['total_return_pct']:+.2f}%")
+            print(f"   Final Capital: ${best_strategy['final_capital']:,.0f}")
+            print(f"   Win Rate: {best_strategy['win_rate_pct']:.1f}%")
+            print(f"   Average Trade: {best_strategy['avg_trade_return_pct']:+.2f}%")
+            print(f"   Average Hold Time: {best_strategy['avg_hold_time_days']:.1f} days")
+            
+            if pd.notna(best_strategy['profit_target']):
+                print(f"   Profit Target Hit Rate: {best_strategy['profit_target_hit_rate']:.1f}%")
+            if pd.notna(best_strategy['stop_loss']):
+                print(f"   Stop Loss Hit Rate: {best_strategy['stop_loss_hit_rate']:.1f}%")
 
 def main():
-    print("SEQUENTIAL OPTIONS TRADING STRATEGY - REALISTIC BACKTEST")
+    print("CONFIGURABLE SEQUENTIAL OPTIONS TRADING STRATEGY")
     print("=" * 80)
-    print("Strategy: IWLS deviation signals + 50% profit targets + reinvestment")
-    print("Capital: $100k starting, 50% position sizing, partial contracts allowed")
-    print("Period: May 1, 2022 to May 9, 2024")
-    print("Target: 50% profit or hold until expiration")
+    print("Strategy: IWLS deviation signals with configurable exit criteria")
+    print("Features: Adjustable profit targets, stop losses, and max hold periods")
     
-    # Setup directories with correct paths
+    # Setup directories
     v2_dir = "/Users/tim/CODE_PROJECTS/IWLS-OPTIONS/IWLS_ANALYSIS_V2"
     options_base_dir = "/Users/tim/CODE_PROJECTS/IWLS-OPTIONS/OPTIONS_DATASET"
-    output_dir = "/Users/tim/CODE_PROJECTS/IWLS-OPTIONS/IWLS_ANALYSIS_V2/SEQUENTIAL_OPTIONS_STRATEGY"
+    base_output_dir = "/Users/tim/CODE_PROJECTS/IWLS-OPTIONS/IWLS_ANALYSIS_V2/CONFIGURABLE_SEQUENTIAL_STRATEGY"
     
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(base_output_dir, exist_ok=True)
     
     if not os.path.exists(v2_dir):
         print(f"❌ IWLS_ANALYSIS_V2 directory not found: {v2_dir}")
@@ -599,10 +796,6 @@ def main():
         print(f"❌ OPTIONS_DATASET directory not found: {options_base_dir}")
         return
     
-    print(f"\nIWLS data directory: {v2_dir}")
-    print(f"Options data directory: {options_base_dir}")
-    print(f"Output directory: {output_dir}")
-    
     # Load IWLS data once
     all_iwls_data = load_all_iwls_data(v2_dir)
     
@@ -610,62 +803,62 @@ def main():
         print("❌ No IWLS data loaded.")
         return
     
-    print(f"✅ Loaded IWLS data for {len(all_iwls_data)} assets")
-    
-    # Set date range
+    # Strategy parameters
     start_date = datetime(2022, 5, 1)
     end_date = datetime(2024, 5, 9)
+    initial_capital = 100000
+    position_size = 0.5
     
-    # Run sequential trading strategy
-    daily_values, trades_df, final_capital = run_sequential_trading_strategy(
+    # Define strategy configurations to test
+    strategy_configs = [
+        # Original 50% profit target only
+        {'profit_target': 50.0, 'stop_loss': None, 'max_hold_days': None},
+        
+        # Profit target with stop loss
+        {'profit_target': 50.0, 'stop_loss': -50.0, 'max_hold_days': None},
+        {'profit_target': 60.0, 'stop_loss': -60.0, 'max_hold_days': None},
+        {'profit_target': 70.0, 'stop_loss': -70.0, 'max_hold_days': None},
+        
+        # Max hold only (no targets)
+        {'profit_target': None, 'stop_loss': None, 'max_hold_days': 100},
+        {'profit_target': None, 'stop_loss': None, 'max_hold_days': 300},
+        {'profit_target': None, 'stop_loss': None, 'max_hold_days': 500},
+        
+        # Combination strategies
+        #{'profit_target': 40.0, 'stop_loss': -25.0, 'max_hold_days': 240},
+        #{'profit_target': 30.0, 'stop_loss': -20.0, 'max_hold_days': 180},
+        #{'profit_target': 25.0, 'stop_loss': -15.0, 'max_hold_days': 150},
+        
+        # Conservative approach
+        #{'profit_target': 20.0, 'stop_loss': -10.0, 'max_hold_days': 120},
+        
+        # Aggressive approach  
+        #{'profit_target': 75.0, 'stop_loss': -40.0, 'max_hold_days': 360},
+    ]
+    
+    print(f"\nTesting {len(strategy_configs)} different configurations:")
+    for i, config in enumerate(strategy_configs):
+        pt = f"{config.get('profit_target')}%" if config.get('profit_target') else "OFF"
+        sl = f"{config.get('stop_loss')}%" if config.get('stop_loss') else "OFF"  
+        mh = f"{config.get('max_hold_days')} days" if config.get('max_hold_days') else "OFF"
+        print(f"  {i+1}. PT: {pt}, SL: {sl}, Max Hold: {mh}")
+    
+    # Run strategy comparison
+    run_strategy_comparison(
         all_iwls_data, options_base_dir, start_date, end_date,
-        initial_capital=100000, profit_target=50, position_size=0.5
+        initial_capital, position_size, strategy_configs, base_output_dir
     )
     
-    # Calculate final performance
-    initial_capital = 100000
-    total_return = ((final_capital / initial_capital) - 1) * 100
+    print(f"\n✅ All strategy configurations completed!")
+    print(f"📁 Results saved to: {base_output_dir}")
+    print(f"📊 Individual config folders: [CONFIG_NAME]/")
+    print(f"📄 Comparison summary: strategy_comparison.csv")
     
-    print(f"\n" + "="*80)
-    print("SEQUENTIAL STRATEGY RESULTS")
-    print("="*80)
-    print(f"Initial capital: ${initial_capital:,}")
-    print(f"Final capital: ${final_capital:,.0f}")
-    print(f"Total return: {total_return:+.2f}%")
-    print(f"Total trades: {len(trades_df)}")
-    
-    if len(trades_df) > 0:
-        winning_trades = len(trades_df[trades_df['return_pct'] > 0])
-        win_rate = (winning_trades / len(trades_df)) * 100
-        avg_trade_return = trades_df['return_pct'].mean()
-        target_hits = len(trades_df[trades_df['exit_reason'] == 'profit_target_50%'])
-        target_hit_rate = (target_hits / len(trades_df)) * 100
-        
-        print(f"Winning trades: {winning_trades}/{len(trades_df)} ({win_rate:.1f}%)")
-        print(f"Average trade return: {avg_trade_return:.2f}%")
-        print(f"Target hit rate: {target_hits}/{len(trades_df)} ({target_hit_rate:.1f}%)")
-        print(f"Average hold time: {trades_df['days_held'].mean():.1f} days")
-        print(f"Best trade: {trades_df['return_pct'].max():.1f}%")
-        print(f"Worst trade: {trades_df['return_pct'].min():.1f}%")
-        
-        print(f"\nTRADE SUMMARY:")
-        for i, (_, trade) in enumerate(trades_df.iterrows()):
-            print(f"  Trade {i+1}: {trade['return_pct']:+6.1f}% in {trade['days_held']:3.0f} days "
-                  f"({trade['entry_date'].strftime('%Y-%m-%d')} to {trade['exit_date'].strftime('%Y-%m-%d')}) "
-                  f"- {trade['exit_reason']}")
-    
-    # Create performance plots
-    create_sequential_strategy_plots(daily_values, trades_df, initial_capital, final_capital, output_dir)
-    
-    # Save results
-    save_sequential_results(daily_values, trades_df, initial_capital, final_capital, output_dir)
-    
-    print(f"\n✅ Sequential strategy analysis complete!")
-    print(f"📁 Results saved to: {output_dir}")
-    print(f"📄 Daily values: daily_account_values.csv")
-    print(f"📄 All trades: all_trades.csv") 
-    print(f"📄 Summary: strategy_summary.csv")
-    print(f"📊 Charts: sequential_strategy_performance.png")
+    print(f"\n💡 To run a single custom configuration, modify the strategy_configs list")
+    print(f"   Example single config:")
+    print(f"   strategy_configs = [")
+    print(f"       {{'profit_target': 35.0, 'stop_loss': -20.0, 'max_hold_days': 200}}")
+    print(f"   ]")
 
 if __name__ == "__main__":
     main()
